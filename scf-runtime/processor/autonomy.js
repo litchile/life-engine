@@ -44,6 +44,9 @@ import { buildLifeContext } from "../shared/life-context.js";
 import { buildWorldTick, emptyWorldTick, snapshotWorldTick } from "../shared/world-tick.js";
 import { emptyFrontierRegistry, evaluateDiscoveryGate } from "../shared/frontier.js";
 import { validateWorldConstitution } from "../shared/world-constitution.js";
+import { guardOutboundText } from "../shared/safety/outbound.js";
+import { createActionBoundary } from "../shared/safety/action-boundary.js";
+import { resolveSafetyPolicy } from "../shared/safety/policy.js";
 import { LIFE_PLAN_KEY, LIFE_PLAN_PENDING_KEY, reconcileLifePlan, emptyLifePlan, seedLifeGoals, createLifePlanEffect, applyLifePlanEffect } from "../shared/life-goals.js";
 import { adaptDirectedEvent, buildLifeDirector, evaluateDirectedEvent } from "../shared/life-director.js";
 import { characterDefaults, DEFAULT_LIFE_ENGINE_CONFIG, isHomeLocation, lifeEngineConfig, runtimeProfileForContext, worldDefaults } from "../shared/life-engine-config.js";
@@ -124,6 +127,9 @@ export async function deliverAutonomyNotification(store, key, savedOutbox, env =
   const sendTextFn = options.sendText || sendText;
   const uploadImageFn = options.uploadImage || uploadImage;
   const sendImageFn = options.sendImage || sendImage;
+  // Action boundary: delivery side effects must be on the policy allowlist.
+  const boundary = options.actionBoundary
+    || createActionBoundary({ policy: resolveSafetyPolicy(lifeEngineConfig(env)), store, surface: "autonomous" });
   const attempt = Number(savedOutbox.attempt_count || 0) + 1;
   let outbox = {
     ...savedOutbox,
@@ -138,6 +144,13 @@ export async function deliverAutonomyNotification(store, key, savedOutbox, env =
 
   try {
     if (outbox.text_status !== "sent") {
+      // Denied by policy => terminally skip (do not retry a disallowed action).
+      if (!boundary.isAllowed("send_text")) {
+        await boundary.ensure("send_text", { recipient: outbox.recipient });
+        const skipped = { ...outbox, status: "safety_skipped", lease_until: null, next_retry_at: null, updated_at: nowIso, error: "send_text_not_allowed" };
+        await store.putJson(key, skipped);
+        return skipped;
+      }
       await sendTextFn(outbox.recipient, outbox.message, env, { idempotencyKey: `${outbox.event_id}-text` });
       outbox = {
         ...outbox,
@@ -154,6 +167,12 @@ export async function deliverAutonomyNotification(store, key, savedOutbox, env =
     await store.putJson(key, outbox);
 
     if (outbox.generated_image_key && outbox.image_status !== "sent") {
+      if (!boundary.isAllowed("send_image")) {
+        await boundary.ensure("send_image", { recipient: outbox.recipient });
+        outbox = { ...outbox, status: "sent", image_status: "safety_skipped", lease_until: null, next_retry_at: null, updated_at: nowIso };
+        await store.putJson(key, outbox);
+        return outbox;
+      }
       const image = await store.getObject(outbox.generated_image_key);
       const imageKey = await uploadImageFn(image.body, "agent-today.png", env);
       await sendImageFn(outbox.recipient, imageKey, env, { idempotencyKey: `${outbox.event_id}-image` });
@@ -1108,6 +1127,47 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
     };
   }
   generated = discoveryCandidate;
+
+  // Outbound safety gate on the autonomous path. Autonomous delivery uses a
+  // different outbound function than live chat (sendText vs replyText), so harm-
+  // category moderation is enforced here, before the item is enqueued/delivered.
+  // A blocked item is skipped silently (no user-facing system-voice message);
+  // guardOutboundText records an `output_blocked` (surface=autonomous) diagnostic.
+  const autonomousText = [generated.message_to_user, generated.narrative, generated.diary, generated.activity]
+    .map((part) => String(part || "").trim()).filter(Boolean).join("\n");
+  const safetyGuard = await guardOutboundText(autonomousText, { surface: "autonomous", config, store });
+  if (!safetyGuard.allowed) {
+    const safetyReason = safetyGuard.moderation.reasonCode || null;
+    await Promise.all([
+      store.putJson("state/world-tick.json", {
+        ...snapshotWorldTick(worldTick),
+        rejected_candidate_event_id: eventId,
+        updated_at: nowIso,
+      }),
+      store.putJson("state/autonomy.json", {
+        ...daily,
+        next_activity_at: nextActivityAt,
+        last_rejection_at: nowIso,
+        last_rejection_stage: "safety",
+        last_rejection_codes: [safetyReason].filter(Boolean),
+        updated_at: nowIso,
+      }),
+    ]);
+    await checkpointWorkflow(store, workflow, "completed", {
+      skipped: "safety_rejected",
+      reason_code: safetyReason,
+      media_task_created: false,
+      next_activity_at: nextActivityAt,
+    }, new Date().toISOString());
+    return {
+      ok: true,
+      skipped: "safety_rejected",
+      reason_code: safetyReason,
+      next_activity_at: nextActivityAt,
+      outbox_replay: outboxReplay,
+    };
+  }
+
   const worldMemory = mergeWorldObservations(worldCanon, discoveryGate.accepted, {
     event_id: eventId,
     occurred_at: nowIso,
@@ -1133,6 +1193,7 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
         referenceImages,
         referenceRoles: referenceAssets.map(primaryReferenceRole),
         config,
+        store,
       }, env);
       const downloaded = await generatedImageToBuffer(result, env);
       const generatedKey = `generated/${date}/${eventId}.png`;

@@ -1,4 +1,7 @@
 import { DEFAULT_LIFE_ENGINE_CONFIG } from "./life-engine-config.js";
+import { guardImagePrompt } from "./safety/outbound.js";
+import { classify } from "./safety/moderation.js";
+import { resolveSafetyPolicy } from "./safety/policy.js";
 
 export function imageProviderConfig(env = process.env) {
   const workspaceId = String(env.ALIYUN_BAILIAN_WORKSPACE_ID || "").trim();
@@ -344,6 +347,24 @@ export async function generateImage(input, env = process.env) {
     throw new Error("IMAGE_BASE_URL, IMAGE_MODEL and IMAGE_API_KEY are required");
   }
 
+  // Outbound safety gate for the image prompt. This is the shared choke point for
+  // both chat and autonomous image requests, so no path reaches the provider with
+  // disallowed intent. On block we short-circuit without calling the provider.
+  const promptGuard = await guardImagePrompt(input.prompt, {
+    surface: "image",
+    config: input.config,
+    store: input.store,
+  });
+  if (!promptGuard.allowed) {
+    return {
+      status: "blocked_by_safety",
+      reason_code: promptGuard.moderation.reasonCode,
+      rule_id: promptGuard.moderation.ruleId,
+      provider: config.provider,
+      model: config.model,
+    };
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
@@ -409,6 +430,11 @@ export async function generateImage(input, env = process.env) {
 }
 
 export async function generatedImageToBuffer(result, env = process.env) {
+  if (result?.status === "blocked_by_safety") {
+    const error = new Error("Image request blocked by safety policy");
+    error.code = "IMAGE_BLOCKED_BY_SAFETY";
+    throw error;
+  }
   if (result?.b64_json) {
     const body = Buffer.from(result.b64_json, "base64");
     assertRequestedImageDimensions(body, result.requested_size);
@@ -480,6 +506,12 @@ export async function analyzeImage(input, env = process.env) {
       ? content.map((item) => typeof item === "string" ? item : item?.text).filter(Boolean).join("\n").trim()
       : String(content || "").trim();
     if (!text) throw new Error("Vision provider returned an empty analysis");
+    // Moderate the description before it re-enters the character's reasoning, so a
+    // harmful image cannot inject disallowed content through its analysis text.
+    const moderation = classify(text, { surface: "image_analysis", policy: resolveSafetyPolicy(input.config) });
+    if (!moderation.allowed) {
+      return { status: "analyzed", text: "（这张图片的内容我不方便描述。）", moderated: true, reason_code: moderation.reasonCode };
+    }
     return { status: "analyzed", text };
   } finally {
     clearTimeout(timer);

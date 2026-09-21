@@ -847,6 +847,8 @@ export async function fulfillChatPhotoRequest({
         size: config.size,
         referenceImages: loadedReferences.referenceImages,
         referenceRoles: loadedReferences.referenceRoles,
+        config,
+        store,
       }, env);
       downloaded = await generatedImageToBuffer(result, env);
       await store.putObject(activeGeneratedKey, downloaded.body, downloaded.contentType);

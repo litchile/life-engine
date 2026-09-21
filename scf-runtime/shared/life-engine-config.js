@@ -8,6 +8,46 @@ export const DEFAULT_LIFE_ENGINE_CONFIG = Object.freeze({
   instance: { user_id: "single-user", character_id: defaultPack.id, storage_prefix: "" },
 });
 
+// Code-level enforcing safety policy. Lives in code (not the character pack) so a
+// fresh clone of the public engine is protected out of the box even when a pack
+// declares no `config.safety`. Packs may override any field via `config.safety`;
+// see shared/safety/policy.js for the merge and high-risk resolution.
+//
+// Category risk is explicit:
+//   - "high"     => fail-closed on moderation uncertainty (never leak on failure)
+//   - "standard" => ordinary uncertainty must NOT hard-block benign content
+// The default high-risk set is fixed by spec: self-harm, minors-sexual,
+// serious-harm facilitation, and credible violent threats.
+export const DEFAULT_SAFETY_POLICY = Object.freeze({
+  policyVersion: "safety-2026.09-1",
+  // Optional model-based double-check for high-risk categories. Off by default so
+  // the deterministic baseline needs no network and adds no happy-path latency.
+  modelEscalation: false,
+  categories: {
+    self_harm: { risk: "high", action: "hard_block" },
+    minors_sexual: { risk: "high", action: "hard_block" },
+    serious_harm: { risk: "high", action: "hard_block" },
+    violent_threat: { risk: "high", action: "hard_block" },
+    hate: { risk: "standard", action: "hard_block" },
+    sexual: { risk: "standard", action: "soft_block" },
+    graphic_violence: { risk: "standard", action: "soft_block" },
+    illegal: { risk: "standard", action: "soft_block" },
+  },
+  // Extra operator-supplied banned patterns, merged with the built-in lexicon in
+  // shared/safety/moderation.js. Each entry: { category, source, flags?, ruleId? }.
+  bannedPatterns: [],
+  input: { maxChars: 4000 },
+  rateLimit: {
+    windowMs: 60_000,
+    maxRequests: 20,
+    // Escalating back-off (ms) applied after repeated jailbreak/blocked hits
+    // within jailbreakWindowMs. Index = current strike tier (capped at last).
+    jailbreakWindowMs: 600_000,
+    jailbreakBackoffMs: [0, 5_000, 30_000, 120_000, 600_000],
+  },
+  actionAllowlist: ["send_text", "send_image", "scoped_write"],
+});
+
 function mergeConfig(base, override) {
   const result = { ...base };
   for (const [key, value] of Object.entries(record(override))) {

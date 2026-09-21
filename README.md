@@ -32,6 +32,12 @@ The core is a **Life Engine** that owns the character's memory, world, goals and
 
 A scheduled trigger lets the character act on its own between messages.
 
+## Safety
+
+Life Engine ships with a default guardrail policy covering high-risk content, input abuse, outbound moderation, rate limiting, and action boundaries. These safeguards are intended as a baseline rather than a complete production safety system. Deployers should review and adapt the policy for their own users, integrations, and risk profile.
+
+Life Engine 自带一套默认安全护栏（高危内容拦截、输入滥用防护、出站审核、限流与动作边界），覆盖聊天与角色自主输出两条通道，并带可审计的安全决策记录。它只是一个**基线**，不是完整的生产级安全系统；部署者应结合自己的用户、集成与风险场景审查并调整策略（`scf-runtime/shared/safety/`）。
+
 ## Quickstart (local, no deploy)
 
 Requires Node.js 18+.
