@@ -1,8 +1,14 @@
 # Life Engine
 
-**A self-hosted life engine for persistent AI characters — memory, autonomous activity, image generation, and Feishu integration.**
+> **Life Engine is a self-hosted engine for AI characters that keep living even when you're offline.**
+>
+> 一个让 AI 角色在你离线时，也能继续生活的自部署引擎。
 
-Life Engine keeps a virtual character *alive* between conversations. Instead of a chatbot that only reacts when you message it, a Life Engine character runs on real-world time: it acts while you are away, forms memories, discovers its world, updates its own state, and reaches out to you on its own. Feishu is the currently supported chat integration; the engine itself is platform-agnostic.
+<p align="center">
+  <img src="docs/architecture.svg" alt="Life Engine pipeline: character pack to autonomous activity to memory and world state to text and image generation to proactive Feishu messages, looping on real-world time" width="900">
+</p>
+
+Instead of a chatbot that only reacts when you message it, a Life Engine character runs on real-world time: it acts while you are away, forms memories, discovers its world, updates its own state, and reaches out to you on its own. Feishu is the currently supported chat integration; the engine itself is platform-agnostic.
 
 一个可自部署的持续生活型 AI Agent 引擎：让虚拟角色在用户离线时继续行动、形成记忆、更新状态，并通过飞书主动发送消息。角色的人设、世界、视觉规则和初始设定都来自版本化的 JSON 角色包，你可以整包替换成自己的角色。
 

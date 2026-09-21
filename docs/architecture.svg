@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 470" width="1200" height="470" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#101c33"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#64748b"/>
+    </marker>
+    <marker id="loop" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#f59e0b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="470" rx="24" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="1199" height="469" rx="24" fill="none" stroke="#1e293b"/>
+
+  <text x="48" y="66" font-size="34" font-weight="700" fill="#f8fafc">Life Engine</text>
+  <rect x="49" y="80" width="120" height="3" rx="1.5" fill="url(#accent)"/>
+  <text x="48" y="110" font-size="16" fill="#94a3b8">Keeps AI characters living while you're offline · 让 AI 角色在你离线时也继续生活</text>
+
+  <g>
+    <g>
+      <rect x="40" y="150" width="200" height="130" rx="14" fill="#18243b" stroke="#2b3b57"/>
+      <rect x="40" y="150" width="200" height="4" rx="2" fill="url(#accent)"/>
+      <g stroke="#5eead4" stroke-width="2" fill="none">
+        <rect x="122" y="176" width="36" height="26" rx="4"/>
+        <circle cx="132" cy="189" r="5"/>
+        <line x1="144" y1="185" x2="152" y2="185"/>
+        <line x1="144" y1="193" x2="152" y2="193"/>
+      </g>
+      <text x="140" y="232" text-anchor="middle" font-size="15" font-weight="600" fill="#e2e8f0">Character Pack</text>
+      <text x="140" y="256" text-anchor="middle" font-size="13" fill="#94a3b8">角色设定</text>
+    </g>
+
+    <g>
+      <rect x="270" y="150" width="200" height="130" rx="14" fill="#18243b" stroke="#2b3b57"/>
+      <rect x="270" y="150" width="200" height="4" rx="2" fill="url(#accent)"/>
+      <g stroke="#5eead4" stroke-width="2" fill="none">
+        <circle cx="370" cy="189" r="16"/>
+        <path d="M370 178 L376 196 L370 191 L364 196 Z" fill="#5eead4" stroke="none"/>
+      </g>
+      <text x="370" y="232" text-anchor="middle" font-size="15" font-weight="600" fill="#e2e8f0">Autonomous Activity</text>
+      <text x="370" y="256" text-anchor="middle" font-size="13" fill="#94a3b8">自主活动</text>
+    </g>
+
+    <g>
+      <rect x="500" y="150" width="200" height="130" rx="14" fill="#18243b" stroke="#2b3b57"/>
+      <rect x="500" y="150" width="200" height="4" rx="2" fill="url(#accent)"/>
+      <g stroke="#fbbf77" stroke-width="2" fill="none">
+        <path d="M600 174 L620 184 L600 194 L580 184 Z"/>
+        <path d="M582 192 L600 201 L618 192"/>
+      </g>
+      <text x="600" y="232" text-anchor="middle" font-size="15" font-weight="600" fill="#e2e8f0">Memory &amp; State</text>
+      <text x="600" y="256" text-anchor="middle" font-size="13" fill="#94a3b8">记忆 · 世界状态</text>
+    </g>
+
+    <g>
+      <rect x="730" y="150" width="200" height="130" rx="14" fill="#18243b" stroke="#2b3b57"/>
+      <rect x="730" y="150" width="200" height="4" rx="2" fill="url(#accent)"/>
+      <g stroke="#fbbf77" stroke-width="2" fill="none">
+        <path d="M830 174 L834 185 L845 189 L834 193 L830 204 L826 193 L815 189 L826 185 Z" fill="#fbbf77" stroke="none"/>
+      </g>
+      <text x="830" y="232" text-anchor="middle" font-size="15" font-weight="600" fill="#e2e8f0">Text · Image Gen</text>
+      <text x="830" y="256" text-anchor="middle" font-size="13" fill="#94a3b8">文本 · 图片生成</text>
+    </g>
+
+    <g>
+      <rect x="960" y="150" width="200" height="130" rx="14" fill="#18243b" stroke="#2b3b57"/>
+      <rect x="960" y="150" width="200" height="4" rx="2" fill="url(#accent)"/>
+      <g stroke="#f59e0b" stroke-width="2" fill="none">
+        <path d="M1044 178 h32 a4 4 0 0 1 4 4 v14 a4 4 0 0 1 -4 4 h-20 l-8 7 v-7 h-4 a4 4 0 0 1 -4 -4 v-14 a4 4 0 0 1 4 -4 Z"/>
+      </g>
+      <text x="1060" y="232" text-anchor="middle" font-size="15" font-weight="600" fill="#e2e8f0">Proactive Feishu</text>
+      <text x="1060" y="256" text-anchor="middle" font-size="13" fill="#94a3b8">飞书主动消息</text>
+    </g>
+  </g>
+
+  <g stroke="#64748b" stroke-width="2" marker-end="url(#arrow)">
+    <line x1="244" y1="215" x2="264" y2="215"/>
+    <line x1="474" y1="215" x2="494" y2="215"/>
+    <line x1="704" y1="215" x2="724" y2="215"/>
+    <line x1="934" y1="215" x2="954" y2="215"/>
+  </g>
+
+  <path d="M1060 280 C1060 332, 370 332, 370 286" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#loop)"/>
+  <rect x="548" y="350" width="334" height="22" rx="6" fill="#0b1220"/>
+  <text x="715" y="365" text-anchor="middle" font-size="13" fill="#f2b968">runs on real-world time · 按现实时间持续，无需你在线</text>
+
+  <rect x="40" y="400" width="1120" height="46" rx="12" fill="#0d1526" stroke="#24324a"/>
+  <circle cx="66" cy="423" r="4" fill="#2dd4bf"/>
+  <text x="82" y="428" font-size="14" fill="#cbd5e1">Self-hosted · Tencent SCF + COS · Feishu adapter today</text>
+  <text x="1144" y="428" text-anchor="end" font-size="14" fill="#7c8aa3">Discord / Telegram / Web — next</text>
+</svg>
