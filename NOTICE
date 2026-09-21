@@ -1,0 +1,14 @@
+Life Engine
+
+Released under the MIT License (see LICENSE).
+
+- The MIT license covers the source code in this repository. Third-party
+  dependencies remain under their own licenses.
+- Running the engine requires your own Tencent Cloud, Feishu and model-provider
+  credentials. This project ships no API quota and creates no cloud resources
+  for you; the repository does not provide a hosted runtime.
+- The bundled example character is fictional and illustrative. Any reference
+  images, generated content or model output you add are yours to license and
+  distribute responsibly.
+- Do not commit credentials, private images or production state to this
+  repository.

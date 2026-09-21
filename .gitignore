@@ -1,0 +1,13 @@
+node_modules/
+.npm-cache/
+.scf-cos-build/
+*.log
+.DS_Store
+.env
+.dev.vars
+.runtime-secrets
+*.token
+/scf-ingress.zip
+/scf-processor.zip
+activation-plan.json
+*-export.json

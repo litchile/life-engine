@@ -1,0 +1,23 @@
+{
+  "name": "life-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reusable, self-hosted autonomous life-engine bot (Tencent SCF + COS + Feishu).",
+  "license": "MIT",
+  "scripts": {
+    "check": "node scripts/check-runtime.mjs",
+    "test": "vitest run",
+    "package:scf:cos": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-scf-cos.ps1",
+    "pack:validate": "node scripts/character-pack.mjs validate examples/harbor-fox.json",
+    "pack:export": "node scripts/character-pack.mjs export",
+    "pack:prepare": "node scripts/character-pack.mjs prepare"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "vitest": "^4.1.0"
+  },
+  "dependencies": {
+    "cos-nodejs-sdk-v5": "^3.0.0"
+  }
+}
