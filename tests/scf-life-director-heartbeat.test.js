@@ -3,6 +3,8 @@ import { runAutonomousHeartbeat, dailyActivityTarget, autonomyPacingDirective, v
 import { evaluateAutonomyCandidate } from "../scf-runtime/shared/autonomy-selection.js";
 import { evaluateDirectedEvent } from "../scf-runtime/shared/life-director.js";
 import { LIFE_PLAN_KEY, LIFE_PLAN_PENDING_KEY, emptyLifePlan, seedLifeGoals, goalFactsForChat } from "../scf-runtime/shared/life-goals.js";
+import { OPEN_THREADS_KEY, emptyOpenThreads, upsertUserSuggestionThreads } from "../scf-runtime/shared/open-threads.js";
+import { sharedExperienceFacts } from "../scf-runtime/shared/chat-promises.js";
 import { DEFAULT_AGENT } from "../scf-runtime/shared/agent.js";
 import { auditGoalsObservation } from "../scripts/lib/goals-observation-audit.mjs";
 
@@ -169,6 +171,9 @@ describe("default director through production heartbeat", () => {
     expect(eventsIn(store)).toHaveLength(1);
     expect(eventsIn(store)[0].life_context_snapshot.director.fallback.reason).toBe("director_contract_rejected");
     expect(eventsIn(store)[0].director_outcome.status).toBe("unrelated");
+    expect(eventsIn(store)[0].fallback_kind).toBe("director_safe");
+    expect(eventsIn(store)[0].notified).toBe(false);
+    expect(eventsIn(store)[0].message_to_user).toBe("");
     expect(store.values.get(LIFE_PLAN_KEY).goals.every((goal) => goal.evidence.length === 0)).toBe(true);
   });
 
@@ -188,6 +193,8 @@ describe("default director through production heartbeat", () => {
     expect(narratives).toHaveLength(target);
     expect(new Set(narratives).size).toBe(target);
     expect(eventsIn(store).every((event) => event.director_outcome.status === "unrelated")).toBe(true);
+    expect(eventsIn(store).every((event) => event.notified === false)).toBe(true);
+    expect(eventsIn(store).every((event) => event.fallback_kind === "director_safe")).toBe(true);
     expect(store.values.get(LIFE_PLAN_KEY).goals.every((goal) => goal.evidence.length === 0)).toBe(true);
   });
 
@@ -210,5 +217,49 @@ describe("default director through production heartbeat", () => {
     expect(store.values.get(LIFE_PLAN_PENDING_KEY)).toBeNull();
     await runAutonomousHeartbeat(store, eventAt(later), env, { now: later, generateJson, sendText: vi.fn() });
     expect(store.values.get(LIFE_PLAN_KEY).goals.flatMap((goal) => goal.evidence)).toHaveLength(1);
+  });
+
+  it.each(["ou_owner", "ou_test_owner"])("reports a shared experience without misattributing its author %s", async (author) => {
+    const store = memoryStore();
+    const now = new Date("2026-09-03T02:00:00.000Z");
+    store.values.set(OPEN_THREADS_KEY, upsertUserSuggestionThreads(emptyOpenThreads(), [{
+      title: "去旧书店看看月见草的图鉴",
+      stance: "accepted",
+      suggested_by: author,
+    }], { eventId: "chat-suggest", location: "旅馆房间", nowIso: now.toISOString() }));
+    const sendText = vi.fn();
+    const generateJson = vi.fn(async () => ({
+      location: "旧书店",
+      activity: "去旧书店翻月见草图鉴",
+      narrative: "我按你说的去旧书店看了月见草那一页。",
+      diary: "我按你说的去旧书店看了月见草那一页。",
+      message_to_user: "",
+      notify_user: false,
+      photo_worthy: false,
+      world_changes: {},
+      agent_changes: {},
+      world_observations: [],
+    }));
+    const result = await runAutonomousHeartbeat(store, eventAt(now), {
+      ...env,
+      AUTONOMY_GOALS_ENABLED: "false",
+    }, { now, generateJson, sendText });
+    expect(result.event_id, JSON.stringify(result)).toBeTruthy();
+    const event = eventsIn(store)[0];
+    expect(event.selected_thread_id).toBeTruthy();
+    const receipts = [...store.values.values()].filter((value) => value?.shared_experience_ids);
+    const facts = sharedExperienceFacts(store.values.get(OPEN_THREADS_KEY), [event], receipts);
+    expect(facts[0].influenced_later).toBe(true);
+    expect(facts[0].result_event_ids).toContain(event.id);
+    expect(facts[0].suggested_by).toBe(author);
+    expect(facts[0].reported_back).toBe(author === env.FEISHU_OWNER_OPEN_ID);
+    const attribution = author === env.FEISHU_OWNER_OPEN_ID ? /你说过/ : /之前有人建议/;
+    expect(event.message_to_user).toMatch(attribution);
+    expect(sendText).toHaveBeenCalled();
+    expect(String(sendText.mock.calls[0][1])).toMatch(attribution);
+    expect(event.memory_updates?.some((item) => item.predicate === "user_suggestion_result")
+      || store.values.get("state/agent-memories.json")?.memories?.some((item) => (
+        String(item.content || "").includes("来自用户")
+      ))).toBe(true);
   });
 });

@@ -133,10 +133,14 @@ function goalStack({ motivations, openThreads, worldCanon, agent, timeContext, r
     const thread = threads[0];
     goals.push({
       layer: "inner",
-      goal: thread.report_to_user
-        ? `兑现或诚实改主意：对用户承诺的“${text(thread.title || thread.content, 100)}”，必须留下真实生活结果`
-        : `让开放线索“${text(thread.title || thread.content, 100)}”产生一个真实的新结果`,
-      source: thread.report_to_user ? "chat_promise" : "open_thread",
+      goal: thread.source === "user_suggestion"
+        ? `用户建议过“${text(thread.title || thread.content, 100)}”。可以去做、暂缓或按自己的想法生活，不要每天必须推进`
+        : thread.report_to_user
+          ? `兑现或诚实改主意：对用户承诺的“${text(thread.title || thread.content, 100)}”，必须留下真实生活结果`
+          : `让开放线索“${text(thread.title || thread.content, 100)}”产生一个真实的新结果`,
+      source: thread.source === "user_suggestion"
+        ? "user_suggestion"
+        : thread.report_to_user ? "chat_promise" : "open_thread",
       source_id: text(thread.id, 100) || null,
     });
   }

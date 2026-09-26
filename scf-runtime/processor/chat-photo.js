@@ -36,7 +36,34 @@ const NON_REQUEST_PATTERNS = [
   /(?:会不会|会|学会|能不能)拍照(?:吗|了没有|呢)?$/,
   /(?:刚刚|之前|昨天).{0,12}(?:说|不是说).{0,12}(?:拍照|照片)/,
   /(?:照片|图片).{0,8}(?:去哪|在哪|怎么没|没有收到)/,
+  // Completion reminders must not re-authorize generation.
+  /拍(?:给我看)?过了/,
+  /(?:已经|早就)(?:给我)?(?:看|拍)过/,
+  /不用再拍/,
+  /不是(?:让你|要你)再拍/,
 ];
+
+const ALREADY_SEEN_PATTERNS = [
+  /拍(?:给我看)?过了/,
+  /(?:已经|早就)(?:给我)?(?:看|拍)过/,
+  /(?:昨天|之前|刚才|刚刚).{0,12}(?:给我看了|拍给我看过|看过了)(?:照片|相片|图片)?/,
+  /不用再拍/,
+  /不是(?:让你|要你)再拍/,
+];
+
+const RETAKE_PATTERNS = [
+  /(?:再|重新)拍(?:一|1|张|个|幅)?/,
+  /重拍(?:一|1|张|个|幅)?/,
+];
+
+export const PHOTO_INTENTS = Object.freeze({
+  NONE: "none",
+  ALREADY_SEEN: "already_seen",
+  CORRECTION: "correction",
+  RESEND: "resend",
+  RETAKE: "retake",
+  NEW_REQUEST: "new_request",
+});
 
 const PHOTO_DELIVERY_RETRY_PATTERNS = [
   /(?:照片|图片)(?:呢|在哪|去哪里了|去哪了)/,
@@ -46,22 +73,67 @@ const PHOTO_DELIVERY_RETRY_PATTERNS = [
   /答应给我的(?:照片|图片)/,
 ];
 
+function normalizePhotoText(text) {
+  return String(text || "").replace(/\s+/g, "");
+}
+
+export function isPhotoAlreadySeenReminder(text) {
+  const normalized = normalizePhotoText(text);
+  return ALREADY_SEEN_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function isPhotoRetakeRequest(text) {
+  const normalized = normalizePhotoText(text);
+  if (isPhotoAlreadySeenReminder(normalized)) return false;
+  return RETAKE_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
 export function isExplicitPhotoRequest(text) {
-  const normalized = String(text || "").replace(/\s+/g, "");
-  if (/(?:不要|不用|别|先不|不想).{0,15}(?:拍|照片|相片|图片)/.test(normalized)) return false;
-  if (NON_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))) return false;
-  return PHOTO_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized));
+  return ["new_request", "retake"].includes(classifyPhotoIntent(text).intent);
 }
 
 export function isPhotoDeliveryRetry(text) {
-  const normalized = String(text || "").replace(/\s+/g, "");
+  const normalized = normalizePhotoText(text);
   return PHOTO_DELIVERY_RETRY_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 export function isPhotoContentCorrection(text) {
-  const normalized = String(text || "").replace(/\s+/g, "");
+  const normalized = normalizePhotoText(text);
   return /^(?:是|应该是|我要的是|我说的是|想看的是|要看的是).{1,40}(?:合照|照片|图片|自拍)(?:哦|呀|啊|呢|吧)?[。！!？?]?$/.test(normalized)
     || /^(?:不是|不对).{0,24}(?:，|,)?(?:是|应该是|我要的是).{1,40}(?:合照|照片|图片|自拍)(?:哦|呀|啊|呢|吧)?[。！!？?]?$/.test(normalized);
+}
+
+/**
+ * One classifier for chat photo routing. Intents are mutually exclusive so a
+ * completion reminder cannot also authorize generation, and "重新拍" wins over
+ * a bare delivery retry when both phrases appear.
+ */
+export function classifyPhotoIntent(text, { hasRecentPhotoContext = false } = {}) {
+  const normalized = normalizePhotoText(text);
+  if (!normalized) return { intent: PHOTO_INTENTS.NONE, text: normalized };
+  if (/(?:不要|不用|别|先不|不想).{0,15}(?:拍|照片|相片|图片)/.test(normalized)
+    && !isPhotoAlreadySeenReminder(normalized)) {
+    return { intent: PHOTO_INTENTS.NONE, text: normalized };
+  }
+  if (isPhotoAlreadySeenReminder(normalized)) {
+    return { intent: PHOTO_INTENTS.ALREADY_SEEN, text: normalized };
+  }
+  if (isPhotoRetakeRequest(normalized)) {
+    return { intent: PHOTO_INTENTS.RETAKE, text: normalized };
+  }
+  if (hasRecentPhotoContext && isPhotoContentCorrection(normalized)) {
+    return { intent: PHOTO_INTENTS.CORRECTION, text: normalized };
+  }
+  if (isPhotoDeliveryRetry(normalized)) {
+    return { intent: PHOTO_INTENTS.RESEND, text: normalized };
+  }
+  if (NON_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return { intent: PHOTO_INTENTS.NONE, text: normalized };
+  }
+  if (PHOTO_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return { intent: PHOTO_INTENTS.NEW_REQUEST, text: normalized };
+  }
+  return { intent: PHOTO_INTENTS.NONE, text: normalized };
 }
 
 export function sanitizeUnbackedPhotoClaim(reply, config = DEFAULT_LIFE_ENGINE_CONFIG) {

@@ -25,9 +25,7 @@ import {
   fulfillChatPhotoRequest,
   extractExplicitPhotoSubject,
   resolvePhotoRetryRecord,
-  isExplicitPhotoRequest,
-  isPhotoContentCorrection,
-  isPhotoDeliveryRetry,
+  classifyPhotoIntent,
   resendRecentChatPhoto,
   sanitizeUnbackedPhotoClaim,
 } from "./chat-photo.js";
@@ -57,9 +55,11 @@ import {
   queueGroundedCuriosity,
   threadContinuityFacts,
   upsertChatPromiseThreads,
+  upsertUserSuggestionThreads,
 } from "../shared/open-threads.js";
 import {
   extractReportablePromises,
+  extractUserSuggestions,
   promiseFactsForChat,
 } from "../shared/chat-promises.js";
 import { guardOutboundText } from "../shared/safety/outbound.js";
@@ -381,11 +381,14 @@ async function processEnvelopeUnlocked(store, envelope, env) {
 
   const hasRecentPhotoContext = recentPhotos.length > 0
     || history.slice(-8).some((item) => /照片|图片|合照|自拍|拍照/.test(String(item?.content || "")));
-  const photoCorrectionRequest = incoming.type === "text"
-    && hasRecentPhotoContext
-    && isPhotoContentCorrection(incoming.text);
+  const photoIntent = incoming.type === "text"
+    ? classifyPhotoIntent(incoming.text, { hasRecentPhotoContext }).intent
+    : "none";
+  const photoCorrectionRequest = photoIntent === "correction";
+  const photoGenerates = photoIntent === "new_request" || photoIntent === "retake" || photoCorrectionRequest;
+  const photoResends = photoIntent === "resend" || viewSavedPhoto;
 
-  if (incoming.type === "text" && !photoCorrectionRequest && (isPhotoDeliveryRetry(incoming.text) || viewSavedPhoto)) {
+  if (incoming.type === "text" && photoResends && !photoGenerates) {
     const resendResult = await resendRecentChatPhoto({
       store,
       messageId,
@@ -425,7 +428,7 @@ async function processEnvelopeUnlocked(store, envelope, env) {
     return { ok: resendResult.ok, type: incoming.type, photo: resendResult.status };
   }
 
-  if (incoming.type === "text" && (isExplicitPhotoRequest(incoming.text) || photoCorrectionRequest)) {
+  if (incoming.type === "text" && photoGenerates) {
     let photoResult;
     if (ellipticalPhoto && !focus?.subject) {
       const reply = "你想看哪样东西的照片？告诉我拍什么就好。";
@@ -559,14 +562,24 @@ async function processEnvelopeUnlocked(store, envelope, env) {
     now,
   );
   const reportablePromises = extractReportablePromises(turn, { nowIso: now });
+  const userSuggestions = incoming.type === "text"
+    ? extractUserSuggestions(incoming.text, turn, { nowIso: now, speakerId: userKey })
+    : [];
   const curiosityState = queueGroundedCuriosity(openThreadState, turn.curiosity, recentEvents, now);
-  const updatedOpenThreads = reportablePromises.length
+  const promisedState = reportablePromises.length
     ? upsertChatPromiseThreads(curiosityState, reportablePromises, {
       eventId,
       location: updatedScene.location,
       nowIso: now,
     })
     : curiosityState;
+  const updatedOpenThreads = userSuggestions.length
+    ? upsertUserSuggestionThreads(promisedState, userSuggestions, {
+      eventId,
+      location: updatedScene.location,
+      nowIso: now,
+    })
+    : promisedState;
   const historyInput = incoming.type === "image"
     ? `[用户发送图片。视觉摘要：${visualSummary}]`
     : incoming.text;

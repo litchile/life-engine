@@ -1,6 +1,7 @@
 const NEAR_TERM_PROMISE = /现在就|一会儿就|一会就|马上就|这就去|这就问|等下就|待会就|待会儿就|待一会儿就|一会儿去|一会去|马上去|这就/;
 const SOFT_MUSING = /有空|以后|改天|哪天|或许|也许|说不定|要是|如果有机会|总有一天|以后再/;
 const PROGRESS_ASK = /咋样了|怎么样了|问到了吗|去了吗|吃了吗|后来呢|结果呢|办成了吗|找到了吗/;
+const USER_SUGGESTION = /(?:你可以|要不你|建议你|下次(?:可以|去|试试)|要不要(?:去|试试|看)|去试试|去看看).{1,40}/;
 
 function text(value, max = 320) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -80,6 +81,84 @@ export function extractReportablePromises(turn = {}, { nowIso = new Date().toISO
   }
 
   return found.slice(0, 2);
+}
+
+function inferSuggestionStance(reply = "") {
+  const value = text(reply, 240);
+  if (/(不想|不了|算了|还是不|我拒绝)/.test(value)) return "declined";
+  if (/(先不|以后|改天|等[一]?[会下]|还没准备|晚点|过两天)/.test(value)) return "deferred";
+  if (/(好|嗯|那我|我去|一会儿就|一会就|现在就|可以)/.test(value)) return "accepted";
+  return "deferred";
+}
+
+/**
+ * Capture a user-offered life suggestion without turning it into a hard promise
+ * or a verified world fact. Stance is the character's own response.
+ */
+export function extractUserSuggestions(userText = "", turn = {}, { nowIso = new Date().toISOString(), speakerId = "user" } = {}) {
+  const found = [];
+  const structured = turn?.user_suggestion && typeof turn.user_suggestion === "object"
+    ? turn.user_suggestion
+    : null;
+  const title = text(structured?.title || structured?.content, 180);
+  if (title) {
+    found.push({
+      title,
+      content: text(structured.content || structured.title, 420) || title,
+      stance: ["accepted", "deferred", "declined"].includes(structured.stance)
+        ? structured.stance
+        : inferSuggestionStance(turn.reply),
+      source: "user_suggestion",
+      suggested_by: speakerId,
+      report_to_user: true,
+      priority: 3,
+      promised_at: nowIso,
+    });
+  }
+  if (!found.length) {
+    const match = text(userText, 240).match(USER_SUGGESTION);
+    if (match) {
+      found.push({
+        title: text(match[0], 180),
+        content: text(match[0], 420),
+        stance: inferSuggestionStance(turn.reply),
+        source: "user_suggestion",
+        suggested_by: speakerId,
+        report_to_user: true,
+        priority: 3,
+        promised_at: nowIso,
+      });
+    }
+  }
+  return found.slice(0, 1);
+}
+
+/** Evidence for the shared-experience experiment: influence, trace, report-back. */
+export function sharedExperienceFacts(openThreads, recentEvents = [], deliveryReceipts = []) {
+  const items = list(openThreads?.items || openThreads).filter((thread) => thread?.source === "user_suggestion");
+  const events = list(recentEvents);
+  return items.map((thread) => {
+    const evidence = list(thread.evidence);
+    const later = evidence.filter((item) => item.operation && item.operation !== "observe");
+    return {
+      id: thread.id,
+      title: thread.title,
+      stance: thread.stance || null,
+      suggested_by: thread.suggested_by || "user",
+      status: thread.status,
+      influenced_later: later.length > 0 || Boolean(thread.last_result),
+      result_event_ids: [...new Set(evidence.map((item) => item.event_id).filter(Boolean))],
+      reported_back: list(deliveryReceipts).some((receipt) => (
+        receipt.text_status === "sent" && Boolean(receipt.text_sent_at)
+        && receipt.recipient === thread.suggested_by
+        && list(receipt.shared_experience_ids).includes(thread.id)
+        && receipt.event_id === thread.last_result?.event_id
+      )),
+      related_events: events
+        .filter((event) => evidence.some((item) => item.event_id === event.id))
+        .map((event) => ({ id: event.id, activity: event.activity, narrative: text(event.narrative, 160) })),
+    };
+  });
 }
 
 export function promiseFactsForChat(openThreads, recentEvents = [], userText = "") {

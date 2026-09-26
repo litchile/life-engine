@@ -3,10 +3,13 @@ import {
   buildConversationPhotoPrompt,
   extractExplicitPhotoSubject,
   fallbackPhotoPlan,
+  classifyPhotoIntent,
   isExplicitPhotoRequest,
   isMultiCharacterPhotoRequest,
+  isPhotoAlreadySeenReminder,
   isPhotoContentCorrection,
   isPhotoDeliveryRetry,
+  isPhotoRetakeRequest,
   normalizePhotoPlan,
   loadAvailablePhotoReferences,
   resolvePhotoRetryRecord,
@@ -93,10 +96,41 @@ describe("explicit chat photo requests", () => {
     "你会拍照吗",
     "你刚刚不是说学会拍照了吗",
     "昨天给我看了照片呢",
+    "你拍给我看过了呀",
+    "这张已经拍给我看过了",
     "照片去哪了",
     "今天在做什么",
   ])("does not charge for ordinary photo conversation: %s", (text) => {
     expect(isExplicitPhotoRequest(text)).toBe(false);
+  });
+
+  it("classifies already-seen, resend, retake and correction as distinct intents", () => {
+    expect(classifyPhotoIntent("你拍给我看过了呀").intent).toBe("already_seen");
+    expect(isPhotoAlreadySeenReminder("你拍给我看过了呀")).toBe(true);
+    expect(classifyPhotoIntent("照片呢").intent).toBe("resend");
+    expect(classifyPhotoIntent("重新拍一张四叶草书签").intent).toBe("retake");
+    expect(isPhotoRetakeRequest("重新拍一张四叶草书签")).toBe(true);
+    expect(classifyPhotoIntent("不是松果，是小猫朋友的合照呀", { hasRecentPhotoContext: true }).intent).toBe("correction");
+    expect(classifyPhotoIntent("拍一张四叶草书签给我看").intent).toBe("new_request");
+    // Retake wins over a bare delivery-retry phrase in the same sentence.
+    expect(classifyPhotoIntent("照片呢，重新拍一张你和花猫朋友在窗边看花草图册的照片").intent).toBe("retake");
+  });
+
+  it("uses the reported dialogue as a photo-routing regression, not a new ledger", () => {
+    const turns = [
+      { user: "拍一张四叶草书签给我看", intent: "new_request", generates: true },
+      { user: "你拍给我看过了呀", intent: "already_seen", generates: false },
+      { user: "照片呢", intent: "resend", generates: false },
+      { user: "重新拍一张四叶草书签", intent: "retake", generates: true },
+      { user: "不是松果，是小猫朋友的合照呀", intent: "correction", generates: true, context: true },
+      { user: "昨天给我看了照片呢", intent: "already_seen", generates: false },
+    ];
+    for (const turn of turns) {
+      const classified = classifyPhotoIntent(turn.user, { hasRecentPhotoContext: Boolean(turn.context) });
+      expect(classified.intent, turn.user).toBe(turn.intent);
+      const generates = ["new_request", "retake", "correction"].includes(classified.intent);
+      expect(generates, turn.user).toBe(turn.generates);
+    }
   });
 
   it.each([

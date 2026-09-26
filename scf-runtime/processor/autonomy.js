@@ -30,6 +30,7 @@ import { checkpointWorkflow, failWorkflow, startWorkflow } from "../shared/workf
 import {
   applyOpenThreadUpdates,
   normalizeOpenThreads,
+  bindSharedExperience,
   openThreadsForPrompt,
   threadContinuityFacts,
   OPEN_THREADS_KEY,
@@ -378,6 +379,7 @@ Pacing directive for this event: ${pacing.instruction}
 Repetition gates for this event: ${selection.instruction}
 Open Threads are unfinished matters in ${config.character.name}'s own life. Prefer one plausible thread when it fits, but a turn may also be only a thought, hesitation, or change of mind without concrete progress. If this event advances a thread, return selected_thread_id and a thread_updates operation. It is also valid to start a genuinely new thread when the event creates a specific unfinished matter.
 For reportable promises, report a concrete result or an honest change of plans when it happens. Waiting for another character, a refusal or partial progress does not fulfill or cancel the promise. Respect waiting_until/next_check_at; before that time continue other life rather than asking again. A deadline only permits checking, never invents a reply. When closing a promise, set notify_user=true and report the actual outcome.
+Accepted user suggestions are optional shared-experience threads, not daily chores. The character may act on one, defer, or live their own day. If this event actually follows an accepted suggestion, set selected_thread_id and, when telling the user, remember the idea came from them. Declined suggestions must not drive the event.
 For cross-day requests use thread_updates with action_result={status,actor,evidence}. Status submitted requires operation wait; answered requires attempt; refused, unknown, no_reply or failed require block; succeeded requires resolve. evidence must be an exact sentence from narrative, and social feedback must name the known actor. Use next_check_at (ISO timestamp, 1 hour to 7 days) with wait, default 48 hours. Distinguish asking from receiving an answer and receiving an answer from finishing a result. Other characters have their own work and may refuse or lack knowledge; their possible presence does not guarantee help. Never claim real external tools were run. On blocked matters use prior feedback to change the approach or explicitly abandon with lived evidence.
 The configured personality affects the way this character explores. Across a day, favor some movement, discoveries, errands, new skills and evolving relationships, but impulsive whims and tiny unpredictable moments are also valid life.
 ${config.world.initial_location} is a starting point, not the whole of ${config.world.name}. Plausible new places may be explored because of an impulse; do not invent teleportation language, but also do not require step-by-step path narration before arriving at a plausible place.
@@ -472,7 +474,10 @@ function normalizeEvent(raw, agent) {
     narrative: String(value.narrative || value.diary || "今天发生了一件很小的事。"),
     importance: Math.max(1, Math.min(5, Number(value.importance || 1))),
     notify_user: Boolean(value.notify_user),
-    message_to_user: String(value.message_to_user || value.diary || value.narrative || ""),
+    fallback_kind: value.fallback_kind ? String(value.fallback_kind) : "",
+    message_to_user: value.fallback_kind
+      ? String(value.message_to_user || "")
+      : String(value.message_to_user || value.diary || value.narrative || ""),
     diary: String(value.diary || value.narrative || ""),
     photo_worthy: Boolean(value.photo_worthy),
     photo_description: String(value.photo_description || ""),
@@ -504,7 +509,8 @@ function safeDirectorFallback(agent, fallbackDirector, lifePlan, recentEvents, p
     const narrative = `我在${location}${choice.narrative.replace(/^我/, "")}`;
     const candidate = normalizeEvent({
       ...choice, narrative, location, mood: agent.mood || "平静", diary: narrative,
-      notify_user: false, message_to_user: "", photo_worthy: false, next_intention: agent.current_intention || "",
+      notify_user: false, message_to_user: "", fallback_kind: "director_safe",
+      photo_worthy: false, next_intention: agent.current_intention || "",
       director_result: null, goal_update: null, world_changes: {}, agent_changes: {}, memory_updates: [], world_observations: [],
     }, agent);
     const repetition = evaluateAutonomyCandidate(candidate, recentEvents, [], {
@@ -1005,6 +1011,10 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
     };
   }
 
+  if (generated.fallback_kind !== "director_safe") {
+    generated = bindSharedExperience(generated, openThreadState).event;
+  }
+
   const activityPlan = createActivityPlan({
     id: `activity-${eventId}`, sourceEventId: eventId, action: activityPlanAction(generated),
     title: generated.activity, location: generated.location,
@@ -1048,7 +1058,10 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
   const remainingActivitiesIncludingCurrent = Math.max(1, activityTarget - activityNumber + 1);
   const scheduledNotification = notificationSlots.includes(activityNumber)
     || remainingMessages >= remainingActivitiesIncludingCurrent;
-  let mayNotify = (generated.notify_user || scheduledNotification) && generated.message_to_user && recipient
+  const silentFallback = generated.fallback_kind === "director_safe"
+    || director?.fallback?.reason === "director_contract_rejected";
+  let mayNotify = !silentFallback
+    && (generated.notify_user || scheduledNotification) && generated.message_to_user && recipient
     && dailyMessageCount < messageTarget;
   let notificationReason = mayNotify ? (generated.notify_user ? "model" : "scheduled_daily_multiple") : null;
   const discoveryCandidate = ensureArrivalPlaceObservation(generated, agent.location, worldCanon);
@@ -1368,12 +1381,29 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
     .filter((thread) => thread.last_result?.event_id === eventId)
     .map((thread) => ({ thread_id: thread.id, title: thread.title, ...thread.last_result }));
   const closedReportable = promiseClosure.closed.filter((thread) => thread.report_to_user);
+  for (const outcome of closedReportable.filter((thread) => thread.source === "user_suggestion")) {
+    memoryUpdates.push({
+      operation: "add",
+      kind: "episode",
+      subject: outcome.title,
+      predicate: "user_suggestion_result",
+      content: `这个念头来自用户。实际结果：${generated.narrative || generated.activity}`,
+      tags: ["user_suggestion", outcome.suggested_by || "user"],
+      importance: 2,
+      source_event_id: eventId,
+    });
+  }
   if (closedReportable.length && recipient && dailyPromiseReportCount < 2) {
     const outcome = closedReportable[0];
-    const defaultMessage = outcome.stage === "resolved"
-      ? `我去办了之前说的事：${generated.activity || outcome.title}`
-      : `我本来打算${outcome.title}，后来改主意了，实际去${generated.activity || "做了别的事"}。`;
-    if (!generated.message_to_user) {
+    const suggestionAttribution = outcome.suggested_by === recipient ? "你说过" : "之前有人建议";
+    const defaultMessage = outcome.source === "user_suggestion"
+      ? (outcome.stage === "resolved"
+        ? `${suggestionAttribution}${outcome.title}。我去试了：${generated.activity || outcome.title}`
+        : `${suggestionAttribution}${outcome.title}，我后来没按那个做，实际去${generated.activity || "做了别的事"}。`)
+      : (outcome.stage === "resolved"
+        ? `我去办了之前说的事：${generated.activity || outcome.title}`
+        : `我本来打算${outcome.title}，后来改主意了，实际去${generated.activity || "做了别的事"}。`);
+    if (outcome.source === "user_suggestion" || !generated.message_to_user) {
       generated.message_to_user = defaultMessage;
       eventRecord.message_to_user = defaultMessage;
     }
@@ -1404,6 +1434,9 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
     reason: notificationReason,
     nowIso,
   }) : null;
+  if (outbox && notificationReason === "promise_report" && closedReportable[0]?.source === "user_suggestion") {
+    outbox.shared_experience_ids = [closedReportable[0].id];
+  }
   workflow = await checkpointWorkflow(store, workflow, "persisting", {
     event_id: eventId,
     memory_updates: memoryUpdates.length,

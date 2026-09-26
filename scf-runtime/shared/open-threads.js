@@ -48,7 +48,7 @@ function normalizeStage(value) {
 
 function normalizeSource(value) {
   const source = text(value, 40).toLowerCase();
-  if (["chat_promise", "autonomy", "system"].includes(source)) return source;
+  if (["chat_promise", "autonomy", "system", "user_suggestion", "curiosity"].includes(source)) return source;
   return source || "autonomy";
 }
 
@@ -68,7 +68,9 @@ function normalizeThread(raw, nowIso) {
     location: text(raw?.location, 120),
     related_entities: [...new Set(list(raw?.related_entities).map((item) => text(item, 80)).filter(Boolean))].slice(0, 8),
     source,
-    report_to_user: reportToUser,
+    stance: ["accepted", "deferred", "declined"].includes(raw?.stance) ? raw.stance : null,
+    suggested_by: text(raw?.suggested_by, 80) || null,
+    report_to_user: reportToUser || source === "user_suggestion",
     promised_at: text(raw?.promised_at, 40) || (reportToUser ? (raw?.created_at || nowIso) : null),
     source_event_id: text(raw?.source_event_id, 120) || null,
     created_at: raw?.created_at || nowIso,
@@ -144,10 +146,17 @@ function applyUpdate(items, rawUpdate, event, nowIso) {
   let current = findMatchingThread(items, rawUpdate);
   if (current?.status === "closed") return items;
   const operation = text(rawUpdate?.operation || rawUpdate?.stage, 24).toLowerCase();
+  const suggestionCompletion = current?.source === "user_suggestion"
+    && operationStage(operation, current.stage) === "resolved";
+  const suggestionEvidence = suggestionCompletion ? completedSuggestionEvidence(event, current) : null;
+  if (suggestionCompletion && !suggestionEvidence) return items;
   // New outcome-bearing transitions require an exact sentence in the accepted event.
   // This checks consistency in the fictional world, not independent real-world truth.
   const outcome = rawUpdate?.action_result;
-  let receipt = null;
+  let receipt = suggestionEvidence && event?.id ? {
+    status: "succeeded", actor: null, evidence: suggestionEvidence,
+    event_id: event.id, occurred_at: nowIso,
+  } : null;
   if (outcome != null) {
     const status = text(outcome.status, 24);
     const evidence = text(outcome.evidence, 420);
@@ -161,7 +170,7 @@ function applyUpdate(items, rawUpdate, event, nowIso) {
     if (status === "no_reply" && (!current || current.stage !== "waiting" || !Number.isFinite(Date.parse(current.next_check_at)) || Date.parse(current.next_check_at) > Date.parse(nowIso))) return items;
     if (status === "submitted" && current?.stage === "waiting") return items;
     if (current?.waiting_for && ["answered", "refused", "unknown", "no_reply"].includes(status) && actor !== current.waiting_for) return items;
-    if (status === "succeeded" && (/打算|准备|想要|计划|还没|尚未|没有完成|未完成/.test(evidence)
+    if (status === "succeeded" && !suggestionEvidence && (/打算|准备|想要|计划|还没|尚未|没有完成|未完成/.test(evidence)
       || !/完成|写好|写完|交给|交付|送到|做成|修好|确认|找到了|记下|画好|归还|finished|completed|delivered/i.test(evidence))) return items;
     receipt = { status, actor: actor || null, evidence, event_id: event.id, occurred_at: nowIso };
     if (current?.last_result?.event_id === event.id && current.last_result.status === status) return items;
@@ -180,6 +189,8 @@ function applyUpdate(items, rawUpdate, event, nowIso) {
       location: rawUpdate?.location || event?.location,
       related_entities: rawUpdate?.related_entities,
       source: rawUpdate?.source,
+      stance: rawUpdate?.stance,
+      suggested_by: rawUpdate?.suggested_by,
       report_to_user: rawUpdate?.report_to_user,
       promised_at: rawUpdate?.promised_at,
       source_event_id: event?.id,
@@ -304,6 +315,28 @@ export function upsertChatPromiseThreads(value, promises = [], {
   return applyOpenThreadUpdates(value, event, updates, nowIso);
 }
 
+export function upsertUserSuggestionThreads(value, suggestions = [], {
+  eventId = null,
+  location = "",
+  nowIso = new Date().toISOString(),
+} = {}) {
+  const event = eventId ? { id: eventId, location, occurred_at: nowIso } : { location, occurred_at: nowIso };
+  const updates = list(suggestions).map((suggestion) => ({
+    operation: "observe",
+    title: suggestion.title || suggestion.content,
+    content: suggestion.content || suggestion.title,
+    location: suggestion.location || location,
+    related_entities: suggestion.related_entities,
+    priority: suggestion.priority || 3,
+    source: "user_suggestion",
+    stance: suggestion.stance,
+    suggested_by: suggestion.suggested_by || "user",
+    report_to_user: true,
+    promised_at: suggestion.promised_at || nowIso,
+  }));
+  return applyOpenThreadUpdates(value, event, updates, nowIso);
+}
+
 /**
  * When a heartbeat commits an event that touched a reportable chat promise,
  * close it as fulfilled (matching activity) or abandoned with lived evidence.
@@ -337,6 +370,9 @@ export function reconcileReportablePromiseClosures(beforeValue, afterValue, even
       closed.push(current);
       continue;
     }
+    // A suggestion is optional. Similarity or selection alone cannot fulfill it
+    // or turn a quiet day into an invented decision to abandon it.
+    if (current.source === "user_suggestion") continue;
     // Waiting, refusals and partial results do not fulfill or cancel a promise.
     if (["waiting", "blocked"].includes(current.stage) || current.last_result) continue;
     const selected = selectedThreadId && selectedThreadId === id;
@@ -359,6 +395,72 @@ export function reconcileReportablePromiseClosures(beforeValue, afterValue, even
   return {
     threads: normalizeOpenThreads({ schema_version: 1, items, updated_at: nowIso }, nowIso),
     closed,
+  };
+}
+
+export function acceptedSharedExperienceThreads(value) {
+  return activeOpenThreads(value).filter((thread) => (
+    thread.source === "user_suggestion" && thread.stance === "accepted"
+  ));
+}
+
+/**
+ * If this lived event is clearly about an accepted user suggestion, bind that
+ * thread so the result can be traced and later reported. Never invent progress
+ * for declined or merely deferred suggestions.
+ */
+function suggestionTokens(value) {
+  const tokens = text(value, 240)
+    .replace(/你可以|要不你|建议你|下次|要不要|去试试|去看看|看看|可以/g, " ")
+    .split(/[\s，、。的了呀啊呢吧]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 2);
+  return [...new Set(tokens)];
+}
+
+function eventMatchesSuggestion(event, thread) {
+  const hay = `${event.activity || ""} ${event.narrative || ""}`;
+  const tokens = suggestionTokens(`${thread.title} ${thread.content}`);
+  if (!tokens.length) return false;
+  const hits = tokens.filter((token) => hay.includes(token));
+  return hits.length >= Math.min(2, tokens.length);
+}
+
+function completedSuggestionEvidence(event, thread) {
+  if (thread.stance !== "accepted" || !eventMatchesSuggestion(event, thread)) return null;
+  // A conservative consistency check, not proof of external-world execution.
+  // Keep uncertain outcomes open; only a lived, related sentence can close one.
+  const sentences = String(event?.narrative || "").split(/[。！？!?\n]/).map((s) => s.trim());
+  return sentences.find((sentence) => (
+    eventMatchesSuggestion({ narrative: sentence }, thread)
+    && !/没有|没能|没去|未能|尚未|还没|未完成|打算|准备|想起|想要|计划|明天|下次|如果|要是|可能|也许|试图|尝试|门关|关门|失败|没找到/.test(sentence)
+    && /看了|翻了|读了|去了|到达|完成|写好|写完|交给|送到|做成|修好|确认|找到了|记下|画好|归还|聊了|问了|买了|看完|读完|finished|completed|delivered/i.test(sentence)
+  )) || null;
+}
+
+export function bindSharedExperience(event, openThreads) {
+  const accepted = acceptedSharedExperienceThreads(openThreads);
+  if (!event || !accepted.length) return { event, thread: null };
+  let thread = event.selected_thread_id
+    ? accepted.find((item) => item.id === event.selected_thread_id) || null
+    : null;
+  if (!thread) thread = accepted.find((item) => eventMatchesSuggestion(event, item)) || null;
+  if (!thread) return { event, thread: null };
+  const evidence = completedSuggestionEvidence(event, thread);
+  if (!evidence) return { event, thread: null };
+  const updates = Array.isArray(event.thread_updates) ? [...event.thread_updates] : [];
+  const already = updates.some((item) => item.thread_id === thread.id || item.title === thread.title);
+  if (!already) {
+    updates.push({
+      operation: "resolve",
+      thread_id: thread.id,
+      title: thread.title,
+      evidence,
+    });
+  }
+  return {
+    event: { ...event, selected_thread_id: thread.id, thread_updates: updates },
+    thread,
   };
 }
 
@@ -401,6 +503,8 @@ export function openThreadsForPrompt(value, context = {}) {
     attempt_count: thread.attempt_count,
     updated_at: thread.updated_at,
     source: thread.source,
+    stance: thread.stance || null,
+    suggested_by: thread.suggested_by || null,
     report_to_user: thread.report_to_user === true,
     waiting_for: thread.waiting_for,
     next_check_at: thread.next_check_at,

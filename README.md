@@ -43,13 +43,13 @@ Life Engine 自带一套默认安全护栏（高危内容拦截、输入滥用�
 Requires Node.js 18+.
 
 ```powershell
-npm install
+npm ci
 npm run check
 npm test
 node scripts/character-pack.mjs validate examples/harbor-fox.json
 ```
 
-`npm install` generates `package-lock.json`. Never commit local secret files (`.env`, `.runtime-secrets`, `.dev.vars`) or private images.
+Dependencies are pinned in `package-lock.json`. Never commit local secret files (`.env`, `.runtime-secrets`, `.dev.vars`) or private images.
 
 Build the deployment bundles (Windows PowerShell):
 

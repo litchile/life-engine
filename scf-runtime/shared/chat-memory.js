@@ -299,6 +299,15 @@ export function normalizeChatTurn(raw, currentScene, fallbackReply = "") {
     new_intention: cleanText(value.new_intention || currentScene.current_intention),
     memory_updates: memories,
     reportable_promise: reportable?.title ? reportable : null,
+    user_suggestion: value.user_suggestion && typeof value.user_suggestion === "object" && cleanText(value.user_suggestion.title || value.user_suggestion.content, 180)
+      ? {
+        title: cleanText(value.user_suggestion.title || value.user_suggestion.content, 180),
+        content: cleanText(value.user_suggestion.content || value.user_suggestion.title, 420),
+        stance: ["accepted", "deferred", "declined"].includes(value.user_suggestion.stance)
+          ? value.user_suggestion.stance
+          : "deferred",
+      }
+      : null,
   };
 }
 
@@ -472,6 +481,7 @@ ${name}当前缓慢变化的情绪状态：${JSON.stringify(emotionState)}
 21. 用户追问承诺进展时，只能依据“对用户作出的近期承诺与结果账本”和近期真实生活事件回答：未发生就说还没做；已改主意就按账本里实际做了的事说；禁止编造完成或装作没说过。
 22. 先选择这一轮的交流意图 interaction_intent：answer回答、acknowledge接住对方、share分享已有见闻、wonder表达真实疑问、close自然收尾。它是内部标记，不读给用户。没有新内容时可以简短结束，不强行反问。
 23. 如果近期真实生活事件留下一个你想继续弄明白的问题，可填写一条curiosity：question包含subject，source_event_id指向该真实事件，evidence逐字引用该事件的一段。它只是自己的未解疑问，不是新事实，也不是对用户承诺；没有确切来源则为null，不必每轮生成。
+24. 若用户给出可执行的生活建议（你可以去、下次试试、要不要去看），填写user_suggestion：title为建议内容，stance为accepted|deferred|declined（你自己的看法，可以暂缓或拒绝）。用户建议只是来源，不能写成已经发生的事实。
 
 只返回JSON：
 {
@@ -490,6 +500,7 @@ ${name}当前缓慢变化的情绪状态：${JSON.stringify(emotionState)}
   },
   "new_intention":"",
   "reportable_promise":{"title":"","content":"","report_to_user":true,"location":"","related_entities":[]},
+  "user_suggestion":null,
   "memory_updates":[{
     "operation":"add|resolve",
     "kind":"fact|episode|preference|intention|promise|correction",

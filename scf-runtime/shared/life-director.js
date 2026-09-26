@@ -165,7 +165,10 @@ export function buildLifeDirector({ state, worldTick, agent, emotionState, world
   const selected = options[0]
     ? { ...options[0], planned_duration_minutes: activityDurationMinutes(options[0].action, `${worldTick.tick_id || date}:${options[0].goal_id}`, lifeProfile) }
     : null;
-  const promise = openThreads.find((thread) => thread.report_to_user);
+  const promise = openThreads.find((thread) => thread.report_to_user && thread.source !== "user_suggestion");
+  const sharedExperience = openThreads.filter((thread) => (
+    thread.source === "user_suggestion" && thread.stance === "accepted"
+  )).slice(0, 2);
   const suggestedOpportunity = list(worldTick.perceivable_opportunities).find((item) => (
     !avoidLocations.some((location) => samePlace(location, item.location))
   )) || list(worldTick.perceivable_opportunities)[0] || null;
@@ -179,7 +182,9 @@ export function buildLifeDirector({ state, worldTick, agent, emotionState, world
   const reasons = [wet ? "天气适合室内推进" : "结合当前位置与已知经历", lowEnergy ? "精力低，先恢复" : "",
     avoidTopics.length ? `近两天主题重复，今天换开${avoidTopics.join("、")}` : "",
     avoidLocations.length ? `近两天路线集中，今天换开${avoidLocations.join("、")}` : "",
-    promise ? "先处理已有聊天承诺" : "", freeDue ? "今日已有推进，留出自由生活" : ""].filter(Boolean);
+    promise ? "先处理已有聊天承诺" : "",
+    sharedExperience.length ? "用户建议可选用，不必每天推进" : "",
+    freeDue ? "今日已有推进，留出自由生活" : ""].filter(Boolean);
   return {
     schema_version: 2, local_date: date, observed_at: worldTick.observed_at, mode, day_plan: dayPlan,
     selected: mode === "goal" ? selected : null,
@@ -187,6 +192,12 @@ export function buildLifeDirector({ state, worldTick, agent, emotionState, world
     allowed_locations: usablePlaces,
     avoid_topics: avoidTopics, avoid_locations: restrictedPlaces.length ? avoidLocations : [],
     suggested_opportunity: suggestedOpportunity,
+    shared_experience: sharedExperience.map((thread) => ({
+      id: thread.id,
+      title: thread.title,
+      stance: thread.stance,
+      suggested_by: thread.suggested_by || "user",
+    })),
     indoor_required: wet && mode !== "promise", reasons,
     time_budget: selected ? {
       duration_minutes: selected.planned_duration_minutes,
@@ -195,7 +206,7 @@ export function buildLifeDirector({ state, worldTick, agent, emotionState, world
     instruction: mode === "goal" ? `${selected.instruction}。完成后返回准确的goal_update；也可因现场阻碍暂停，须说明真实原因。`
       : mode === "rest" ? "做一件低负担的恢复活动；不用推进目标，不改变安静敏感的人格。"
         : mode === "promise" ? "按既有承诺规则兑现或诚实改主意。不要因此伪造长期愿望进展。"
-          : `留出一次自己的小念头、休息或探索；避开连续两天的重复主题，不能用换说法伪造新进展。${suggestedOpportunity ? `可参考但不必强行采用的当下机会：${suggestedOpportunity.description}` : ""}`,
+          : `留出一次自己的小念头、休息或探索；避开连续两天的重复主题，不能用换说法伪造新进展。${suggestedOpportunity ? `可参考但不必强行采用的当下机会：${suggestedOpportunity.description}` : ""}${sharedExperience.length ? ` 用户曾建议“${sharedExperience[0].title}”，可以去做并记住是对方提起的，也可以先过自己的日子，不要每天必须推进。` : ""}`,
     persona_rule: `${config.character.core_personality.join("、")}；愿望可慢慢推进，禁止任务打卡口吻和为了凑进度强行社交。`,
   };
 }

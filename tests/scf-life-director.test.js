@@ -239,6 +239,20 @@ describe("persistent wishes and daily director", () => {
     input.emotionState.current.energy = 0.1;
     expect(buildLifeDirector(input).mode).toBe("rest");
     expect(buildLifeDirector({ ...input, openThreads: [{ id: "promise", report_to_user: true }] }).mode).toBe("promise");
+    const suggestionOnly = buildLifeDirector({
+      ...input,
+      emotionState: defaultEmotionState("2026-09-03T02:00:00.000Z"),
+      openThreads: [{
+        id: "suggest-1",
+        source: "user_suggestion",
+        stance: "accepted",
+        report_to_user: true,
+        title: "去旧书店看看月见草的图鉴",
+      }],
+    });
+    expect(suggestionOnly.mode).not.toBe("promise");
+    expect(suggestionOnly.shared_experience[0].title).toContain("旧书店");
+    expect(suggestionOnly.reasons.join("")).toMatch(/用户建议可选用/);
     const rest = buildLifeDirector(input);
     expect(evaluateDirectedEvent({ activity: "休息", narrative: "我坐了一会儿。", location: "咖啡馆" }, rest, input.state).outcome.status).toBe("unrelated");
   });

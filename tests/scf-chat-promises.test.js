@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   extractReportablePromises,
+  extractUserSuggestions,
   looksLikeNearTermUserFacingPromise,
   promiseFactsForChat,
+  sharedExperienceFacts,
   isPromiseProgressQuestion,
 } from "../scf-runtime/shared/chat-promises.js";
 import {
   activeOpenThreads,
   applyOpenThreadUpdates,
+  bindSharedExperience,
   emptyOpenThreads,
   prioritizeOpenThreads,
   reconcileReportablePromiseClosures,
   upsertChatPromiseThreads,
+  upsertUserSuggestionThreads,
 } from "../scf-runtime/shared/open-threads.js";
 import { normalizeChatTurn } from "../scf-runtime/shared/chat-memory.js";
 import { buildLifeContext } from "../scf-runtime/shared/life-context.js";
@@ -166,5 +170,108 @@ describe("chat promise threads and closure", () => {
     expect(facts[0].status).toBe("closed");
     expect(facts[0].stage).toBe("abandoned");
     expect(facts[0].related_events[0].activity).toContain("花花");
+  });
+});
+
+describe("shared-experience suggestion loop", () => {
+  it.each([
+    "今天没有去旧书店看图鉴，只是在房间里想了想。",
+    "明天计划去旧书店看图鉴。",
+    "我去了旧书店看图鉴，但门关着，没有看成。",
+  ])("does not complete a suggestion from an unfulfilled narrative: %s", (narrative) => {
+    const before = upsertUserSuggestionThreads(emptyOpenThreads(), [{
+      title: "去旧书店看图鉴", stance: "accepted",
+    }], { eventId: "suggest-1" });
+    const id = before.items[0].id;
+    const event = { id: "later-1", selected_thread_id: id, activity: "去旧书店看图鉴", narrative };
+    expect(bindSharedExperience(event, before).thread).toBeNull();
+    const after = applyOpenThreadUpdates(before, event, [{ thread_id: id, operation: "resolve", evidence: narrative }]);
+    const reconciled = reconcileReportablePromiseClosures(before, after, event, { selectedThreadId: id });
+    expect(reconciled.threads.items[0].status).toBe("active");
+    expect(reconciled.closed).toEqual([]);
+  });
+
+  it("reports back only with a matching sent outbox receipt", () => {
+    const thread = { id: "t1", source: "user_suggestion", suggested_by: "owner", report_to_user: true, last_result: { event_id: "e1" } };
+    const receipt = { event_id: "e1", recipient: "owner", shared_experience_ids: ["t1"], text_status: "failed" };
+    expect(sharedExperienceFacts([thread], [], [receipt])[0].reported_back).toBe(false);
+    expect(sharedExperienceFacts([thread], [], [{ ...receipt, text_status: "sent", text_sent_at: "2026-09-24T10:00:00Z" }])[0].reported_back).toBe(true);
+    expect(sharedExperienceFacts([thread], [], [{ ...receipt, event_id: "other", text_status: "sent", text_sent_at: "2026-09-24T10:00:00Z" }])[0].reported_back).toBe(false);
+  });
+
+  it("captures a user suggestion with stance and later traces influence", () => {
+    const suggestions = extractUserSuggestions(
+      "下次你可以去旧书店看看月见草的图鉴",
+      { reply: "好，我去翻一翻。" },
+      { nowIso: "2026-09-24T12:00:00.000Z", speakerId: "ou_owner" },
+    );
+    expect(suggestions[0].source).toBe("user_suggestion");
+    expect(suggestions[0].suggested_by).toBe("ou_owner");
+    expect(["accepted", "deferred"]).toContain(suggestions[0].stance);
+
+    let state = upsertUserSuggestionThreads(emptyOpenThreads(), suggestions, {
+      eventId: "chat-suggest-1",
+      location: "旅馆房间",
+      nowIso: "2026-09-24T12:00:00.000Z",
+    });
+    expect(state.items[0].source).toBe("user_suggestion");
+    expect(state.items[0].suggested_by).toBe("ou_owner");
+
+    const laterEvent = {
+      id: "event-bookstore",
+      activity: "去旧书店翻月见草图鉴",
+      narrative: "我按你说的去旧书店看了月见草的图鉴。",
+      location: "旧书店",
+    };
+    state = applyOpenThreadUpdates(state, laterEvent, [{
+      operation: "resolve",
+      title: suggestions[0].title,
+      evidence: laterEvent.narrative,
+    }], "2026-09-24T16:00:00.000Z");
+
+    const facts = sharedExperienceFacts(state, [laterEvent]);
+    expect(facts[0].influenced_later).toBe(true);
+    expect(facts[0].result_event_ids).toContain("event-bookstore");
+    expect(facts[0].suggested_by).toBe("ou_owner");
+  });
+
+  it("lets the character defer or decline without inventing a completed fact", () => {
+    const deferred = extractUserSuggestions("要不要去邮局看看", { reply: "今天先不去，过两天再说。" });
+    expect(deferred[0].stance).toBe("deferred");
+    const declined = extractUserSuggestions("建议你现在就去热闹的广场", { reply: "那地方太热闹了，我不想去。" });
+    expect(declined[0].stance).toBe("declined");
+  });
+
+  it("binds an accepted suggestion to a later lived event and ignores a declined one", () => {
+    const accepted = upsertUserSuggestionThreads(emptyOpenThreads(), [{
+      title: "去旧书店看看月见草的图鉴",
+      stance: "accepted",
+      suggested_by: "ou_owner",
+    }], { eventId: "chat-1", nowIso: "2026-09-24T12:00:00.000Z" });
+    const bound = bindSharedExperience({
+      location: "旧书店",
+      activity: "去旧书店翻月见草图鉴",
+      narrative: "我按你说的去旧书店看了月见草那一页。",
+    }, accepted);
+    expect(bound.thread.suggested_by).toBe("ou_owner");
+    expect(bound.event.selected_thread_id).toBe(accepted.items[0].id);
+
+    const garden = bindSharedExperience({
+      location: "花园",
+      activity: "观察月见草",
+      narrative: "我观察了月见草朝向光的一面。",
+    }, accepted);
+    expect(garden.thread).toBeNull();
+
+    const declinedState = upsertUserSuggestionThreads(emptyOpenThreads(), [{
+      title: "去旧书店看看月见草的图鉴",
+      stance: "declined",
+      suggested_by: "ou_owner",
+    }], { eventId: "chat-2", nowIso: "2026-09-24T12:00:00.000Z" });
+    expect(bindSharedExperience({
+      location: "旧书店",
+      activity: "去旧书店翻月见草图鉴",
+      narrative: "我按你说的去旧书店看了月见草那一页。",
+    }, declinedState).thread).toBeNull();
   });
 });
