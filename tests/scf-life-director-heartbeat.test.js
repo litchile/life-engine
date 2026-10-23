@@ -136,7 +136,7 @@ describe("default director through production heartbeat", () => {
     expect(advances[2].director_outcome.topic).not.toBe("plants");
     expect(ledger.days.every((day) => new Set(day.events.map((event) => event.action)).size >= 2)).toBe(true);
     expect(events.every((event) => event.constitution_snapshot.accepted)).toBe(true);
-    expect(events.every((event) => event.life_context_snapshot.director.persona_rule.includes("稍微社恐"))).toBe(true);
+    expect(events.every((event) => event.life_context_snapshot.director.persona_rule.includes("对陌生人慢热，但能独立处理日常生活"))).toBe(true);
     expect(events.every((event) => Number(event.activity_duration_minutes) > 0)).toBe(true);
     expect(events.every((event) => Date.parse(event.activity_ends_at) > Date.parse(event.activity_started_at))).toBe(true);
     expect(events.every((event) => event.world_tick_snapshot.weather_state?.scope_id === "spruce-town")).toBe(true);
@@ -172,8 +172,16 @@ describe("default director through production heartbeat", () => {
     expect(eventsIn(store)[0].life_context_snapshot.director.fallback.reason).toBe("director_contract_rejected");
     expect(eventsIn(store)[0].director_outcome.status).toBe("unrelated");
     expect(eventsIn(store)[0].fallback_kind).toBe("director_safe");
+    expect(eventsIn(store)[0].life_context_snapshot.director.fallback.attempted_goal_id).toBeTruthy();
+    expect(generateJson.mock.calls[1][0]).toContain("Evidence contract:");
     expect(eventsIn(store)[0].notified).toBe(false);
     expect(eventsIn(store)[0].message_to_user).toBe("");
+    expect(store.values.get("state/autonomy-quality.json")).toMatchObject({ committed_events: 1, fallback_events: 1, generated_events: 0, advanced_goals: 0 });
+    const workflow = [...store.values.values()].find((value) => value?.workflow_type === "autonomy");
+    const attempts = workflow.checkpoints.find((checkpoint) => checkpoint.data?.candidate_attempts)?.data.candidate_attempts;
+    expect(attempts).toHaveLength(2);
+    expect(attempts.every((attempt) => attempt.candidate.narrative === "我打算明天再去看看。")).toBe(true);
+    expect(attempts.every((attempt) => attempt.review.director.accepted === false)).toBe(true);
     expect(store.values.get(LIFE_PLAN_KEY).goals.every((goal) => goal.evidence.length === 0)).toBe(true);
   });
 
@@ -181,6 +189,9 @@ describe("default director through production heartbeat", () => {
     const store = memoryStore();
     const generateJson = vi.fn(modelFixture(store, { modify: (event) => ({ ...event,
       narrative: "我打算明天再去看看。", director_result: { status: "completed", evidence_sentence: "我打算明天再去看看。" },
+      // Remain invalid in free slots too: a false claim must never advance an
+      // unrelated goal simply because the scheduler stopped selecting it.
+      goal_update: { goal_id: "unavailable-goal", operation: "advance", evidence: "我打算明天再去看看。" },
     }) }));
     const narratives = [];
     const target = dailyActivityTarget("2026-09-03");
@@ -217,6 +228,28 @@ describe("default director through production heartbeat", () => {
     expect(store.values.get(LIFE_PLAN_PENDING_KEY)).toBeNull();
     await runAutonomousHeartbeat(store, eventAt(later), env, { now: later, generateJson, sendText: vi.fn() });
     expect(store.values.get(LIFE_PLAN_KEY).goals.flatMap((goal) => goal.evidence)).toHaveLength(1);
+  });
+
+  it("commits acceptance, meal result and sent shared-experience receipt in one real heartbeat flow", async () => {
+    const store = memoryStore();
+    const now = new Date("2026-09-03T02:00:00.000Z");
+    const threads = upsertUserSuggestionThreads(emptyOpenThreads(), [{ title: "吃碗小面", stance: "deferred", suggested_by: env.FEISHU_OWNER_OPEN_ID }],
+      { eventId: "chat-meal", location: "咖啡馆", nowIso: now.toISOString() });
+    store.values.set(OPEN_THREADS_KEY, threads);
+    const threadId = threads.items[0].id;
+    const narrative = "我决定试试吃碗小面的建议。我在咖啡馆吃了一碗面。";
+    const model = vi.fn(async () => ({ location: "咖啡馆", activity: "吃碗小面", narrative, diary: narrative,
+      selected_thread_id: threadId, thread_updates: [{ thread_id: threadId, operation: "resolve",
+        stance_change: { stance: "accepted", evidence: "我决定试试吃碗小面的建议" },
+        action_result: { status: "succeeded", evidence: "我在咖啡馆吃了一碗面" } }],
+      notify_user: false, photo_worthy: false, world_changes: {}, agent_changes: {}, world_observations: [] }));
+    const result = await runAutonomousHeartbeat(store, eventAt(now), { ...env, AUTONOMY_GOALS_ENABLED: "false" },
+      { now, generateJson: model, sendText: vi.fn() });
+    expect(result.event_id, JSON.stringify(result)).toBeTruthy();
+    const event = eventsIn(store)[0];
+    expect(event.thread_results).toEqual(expect.arrayContaining([expect.objectContaining({ thread_id: threadId, status: "succeeded" })]));
+    const receipts = [...store.values.values()].filter((value) => value?.shared_experience_ids);
+    expect(sharedExperienceFacts(store.values.get(OPEN_THREADS_KEY), [event], receipts)[0]).toMatchObject({ stance: "accepted", status: "closed", reported_back: true });
   });
 
   it.each(["ou_owner", "ou_test_owner"])("reports a shared experience without misattributing its author %s", async (author) => {

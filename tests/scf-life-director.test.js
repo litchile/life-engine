@@ -47,6 +47,23 @@ export function eventForSelection(selected, overrides = {}) {
 }
 
 describe("persistent wishes and daily director", () => {
+  it("preserves a failed goal attempt without advancing it and gives the next slot free life", () => {
+    const input = directorInput();
+    const selected = buildLifeDirector(input);
+    const fallback = { ...selected, mode: "free", selected: null,
+      fallback: { attempted_goal_id: selected.selected.goal_id } };
+    const event = { id: "failed-goal-slot", local_date: "2026-09-03", occurred_at: input.worldTick.observed_at,
+      location: "小镇青石路", narrative: "我喝了几口水。" };
+    const outcome = { status: "unrelated", goal_id: null, action: "rest", topic: "rest" };
+    const saved = applyLifePlanEffect(input.state, createLifePlanEffect(input.state, fallback, event, outcome));
+    expect(saved.goals).toEqual(input.state.goals);
+    expect(saved.days[0].events[0].attempted_goal_id).toBe(selected.selected.goal_id);
+    const next = buildLifeDirector({ ...input, state: saved });
+    expect(next.mode).toBe("free");
+    const freeEvent = { ...event, id: "free-slot", occurred_at: "2026-09-03T04:00:00Z" };
+    const afterFree = applyLifePlanEffect(saved, createLifePlanEffect(saved, next, freeEvent, outcome));
+    expect(buildLifeDirector({ ...input, state: afterFree }).mode).toBe("goal");
+  });
   it("grounds wishes in canonical memories and possessions, with preference provenance and no duplicate reseeding", () => {
     const input = directorInput();
     const goals = input.state.goals;
@@ -259,7 +276,7 @@ describe("persistent wishes and daily director", () => {
 
   it("keeps character constraints and supplies chat with evidence rather than an instruction to fabricate completion", () => {
     const input = directorInput();
-    expect(buildLifeDirector(input).persona_rule).toContain("稍微社恐");
+    expect(buildLifeDirector(input).persona_rule).toContain("对陌生人慢热，但能独立处理日常生活");
     expect(systemPrompt({}, input.agent)).toContain("安静、敏感、善良、好奇");
     const prompt = structuredChatPrompt({ world: {}, agent: input.agent, currentScene: {}, worldCanon: [], recentEvents: [], memories: [], goalFacts: goalFactsForChat(input.state) });
     expect(prompt).toContain("月见草");

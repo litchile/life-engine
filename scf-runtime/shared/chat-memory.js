@@ -1,4 +1,5 @@
 import { DEFAULT_LIFE_ENGINE_CONFIG } from "./life-engine-config.js";
+import { recallableMemory } from "./memory-evidence.js";
 
 const ENVIRONMENTS = new Set(["indoors", "outdoors", "threshold"]);
 const MEMORY_KINDS = new Set(["fact", "episode", "preference", "intention", "promise", "correction"]);
@@ -100,6 +101,8 @@ export function deriveConversationCorrections(history = [], currentUserText = ""
       correction.source_sender_id = turn.sender_id || null;
       correction.source_chat_id = turn.chat_id || null;
       correction.source_message_id = turn.message_id || null;
+      correction.evidence = { type: "user_correction", verified: true, quote: text,
+        source_event_id: turn.event_id || null };
     }
   }
   return corrections.filter((item, index, list) => (
@@ -118,6 +121,12 @@ function relationKey(memory) {
   const subject = cleanText(memory?.subject, 80).toLowerCase();
   const predicate = cleanText(memory?.predicate, 80).toLowerCase();
   return subject && predicate ? `${subject}:${predicate}` : "";
+}
+
+function sameMemoryAudience(left, right) {
+  if (left.evidence?.type !== "user_statement" && right.evidence?.type !== "user_statement") return true;
+  return left.evidence?.type === right.evidence?.type && left.source_sender_id === right.source_sender_id
+    && left.source_chat_id === right.source_chat_id;
 }
 
 function grams(value) {
@@ -171,6 +180,11 @@ function normalizeStoredMemory(value, nowIso) {
     source_sender_id: cleanText(value?.source_sender_id, 128) || null,
     source_chat_id: cleanText(value?.source_chat_id, 128) || null,
     source_message_id: cleanText(value?.source_message_id, 128) || null,
+    evidence: value?.evidence?.verified === true ? {
+      type: cleanText(value.evidence.type, 40), quote: cleanText(value.evidence.quote, 240),
+      source_event_id: cleanText(value.evidence.source_event_id, 100) || null, verified: true,
+    } : null,
+    occurred_at: value?.occurred_at || null,
     created_at: createdAt,
     updated_at: value?.updated_at || createdAt,
     last_recalled_at: value?.last_recalled_at || null,
@@ -183,6 +197,10 @@ function normalizeStoredMemory(value, nowIso) {
 export function inferEnvironment(location, fallback = "indoors") {
   const text = cleanText(location, 200);
   if (/(门口|门廊|窗边|入口|廊下)/.test(text)) return "threshold";
+  // A street in a venue's name does not put the venue outdoors. Exterior
+  // landmarks must not inherit the previous room's environment either.
+  if (/(?:房间|卧室|大厅|早餐厅|店|馆|邮局|磨坊|室内|屋里)(?:里|内)?$/.test(text)) return "indoors";
+  if (/(?:后面|外面|屋外|院外)的?(?:围栏|篱笆)/.test(text)) return "outdoors";
   if (/(街|路|院|湖|溪|桥|树林|林间|田野|广场|集市|码头|山坡|花园|户外|室外)/.test(text)) return "outdoors";
   if (/(房间|卧室|走廊|大厅|前台|早餐厅|店|书店|面包房|邮局|室内|屋里)/.test(text)) return "indoors";
   return ENVIRONMENTS.has(fallback) ? fallback : "indoors";
@@ -245,7 +263,7 @@ export function normalizeChatTurn(raw, currentScene, fallbackReply = "") {
   const memories = asArray(value.memory_updates).map((item) => {
     if (typeof item === "string") return { content: cleanText(item), importance: 1, operation: "add" };
     return {
-      content: cleanText(item?.content),
+      content: cleanText(item?.content, 240),
       importance: item?.kind === "correction"
         ? 3
         : Math.max(1, Math.min(3, Number(item?.importance || 1))),
@@ -257,6 +275,10 @@ export function normalizeChatTurn(raw, currentScene, fallbackReply = "") {
       operation: new Set(["add", "resolve"]).has(item?.operation) ? item.operation : "add",
       report_to_user: item?.report_to_user === true || item?.user_facing === true || undefined,
       user_facing: item?.user_facing === true || undefined,
+      evidence: item?.evidence && typeof item.evidence === "object" ? {
+        type: cleanText(item.evidence.type, 40), quote: cleanText(item.evidence.quote, 240),
+        source_event_id: cleanText(item.evidence.source_event_id, 100),
+      } : null,
     };
   }).filter((item) => item.content).slice(0, 3);
   const reportable = value.reportable_promise && typeof value.reportable_promise === "object"
@@ -283,6 +305,7 @@ export function normalizeChatTurn(raw, currentScene, fallbackReply = "") {
     scene_transition: {
       occurred: Boolean(occurred),
       transition_type: occurred && transition.transition_type === "correction" ? "correction" : "movement",
+      evidence: cleanText(transition.evidence, 240),
       location: occurred ? cleanText(transition.location || currentScene.location) : currentScene.location,
       sub_location: occurred ? cleanText(transition.sub_location) : currentScene.sub_location,
       environment: occurred
@@ -354,7 +377,8 @@ export function mergeConversationMemories(existing, updates, nowIso) {
     }
     const duplicate = normalized.kind === "correction"
       ? null
-      : all.find((item) => cleanText(item?.content) === content || similarity(item?.content, content) >= 0.86);
+      : all.find((item) => sameMemoryAudience(item, normalized)
+        && (cleanText(item?.content) === content || similarity(item?.content, content) >= 0.86));
     if (duplicate) {
       duplicate.importance = Math.max(Number(duplicate.importance || 1), Number(update.importance || 1));
       duplicate.kind = duplicate.kind === "fact" && normalized.kind !== "fact" ? normalized.kind : duplicate.kind;
@@ -366,6 +390,8 @@ export function mergeConversationMemories(existing, updates, nowIso) {
       duplicate.source_sender_id = normalized.source_sender_id || duplicate.source_sender_id;
       duplicate.source_chat_id = normalized.source_chat_id || duplicate.source_chat_id;
       duplicate.source_message_id = normalized.source_message_id || duplicate.source_message_id;
+      duplicate.evidence = normalized.evidence || duplicate.evidence;
+      duplicate.occurred_at = normalized.occurred_at || duplicate.occurred_at;
       duplicate.updated_at = nowIso;
       continue;
     }
@@ -390,7 +416,7 @@ export function mergeConversationMemories(existing, updates, nowIso) {
   }).slice(0, MAX_MEMORIES);
 }
 
-export function retrieveRelevantMemories(memories, { query = "", currentScene = {}, recentEvents = [], limit = 10, nowIso = new Date().toISOString() } = {}) {
+export function retrieveRelevantMemories(memories, { query = "", currentScene = {}, recentEvents = [], limit = 10, nowIso = new Date().toISOString(), audience = null } = {}) {
   const context = [
     query,
     currentScene.location,
@@ -403,7 +429,7 @@ export function retrieveRelevantMemories(memories, { query = "", currentScene = 
   const now = Date.parse(nowIso) || Date.now();
   return asArray(memories)
     .map((value) => normalizeStoredMemory(value, nowIso))
-    .filter((item) => item && item.status === "active")
+    .filter((item) => item && item.status === "active" && recallableMemory(item, audience))
     .map((item) => {
       const searchable = [item.content, item.kind, item.subject, item.predicate, ...item.tags].join(" ");
       const relevance = relevanceSimilarity(searchable, context);
@@ -482,6 +508,11 @@ ${name}当前缓慢变化的情绪状态：${JSON.stringify(emotionState)}
 22. 先选择这一轮的交流意图 interaction_intent：answer回答、acknowledge接住对方、share分享已有见闻、wonder表达真实疑问、close自然收尾。它是内部标记，不读给用户。没有新内容时可以简短结束，不强行反问。
 23. 如果近期真实生活事件留下一个你想继续弄明白的问题，可填写一条curiosity：question包含subject，source_event_id指向该真实事件，evidence逐字引用该事件的一段。它只是自己的未解疑问，不是新事实，也不是对用户承诺；没有确切来源则为null，不必每轮生成。
 24. 若用户给出可执行的生活建议（你可以去、下次试试、要不要去看），填写user_suggestion：title为建议内容，stance为accepted|deferred|declined（你自己的看法，可以暂缓或拒绝）。用户建议只是来源，不能写成已经发生的事实。
+25. 每条memory_updates必须提供evidence：type为life_event（引用真实生活事件的narrative及其id）、user_statement（引用当前用户本人陈述，保留说话人归属）、chat_transition（引用本轮已提交移动的证据）或reply_intention（引用本轮明确未来计划）。没有来源就不写入。自己的解释、旧聊天自述、引用另一条记忆，都不能证明过去发生过经历。不要用本轮聊天来resolve完成事项。
+26. 服务端保存核对过的来源原文，不采纳附在有效引用后的扩写。没有独立事件支持时，直接承认那段经过不能确认，不为旧回复编造先后顺序。
+27. evidence.type=user_statement只是对应说话人的陈述，不是独立验证过的世界事实；不得改写为你的亲历。用户偏好由单独的本人陈述记录保存，不要重复写入memory_updates。
+28. 正面回答本轮问题：先给结论，再给必要的依据。问“有没有”时先说明有、没有或无法确认；问原因时说明具体原因。不要用景物、喝水、安静、旧故事、反问或道歉替代答案。没有新进展可以直接说没有；证据不足则说不能确认，二者不要混淆。
+29. 问新人、新地点或关系变化时，区分初次接触、再次见面、互动改变和未来心愿。只有对应事件支持才能称第一次或关系进展；重述旧事、换说法、想去做均不是新进展。没有符合问题的事例就停在明确回答，不凑一个旧例子。具体到“最近两天”等时间范围时，只用该范围内的事件。
 
 只返回JSON：
 {
@@ -496,7 +527,8 @@ ${name}当前缓慢变化的情绪状态：${JSON.stringify(emotionState)}
     "environment":"indoors|outdoors|threshold",
     "activity":"",
     "present_characters":[],
-    "reason":""
+    "reason":"",
+    "evidence":"occurred=true时必须逐字引用本轮reply中已经完成移动的短句；correction则引用本轮用户纠正原文。未来计划、旧经历不能作证据。"
   },
   "new_intention":"",
   "reportable_promise":{"title":"","content":"","report_to_user":true,"location":"","related_entities":[]},
@@ -510,7 +542,8 @@ ${name}当前缓慢变化的情绪状态：${JSON.stringify(emotionState)}
     "tags":["地点或角色等检索词"],
     "importance":1,
     "due_at":null,
-    "report_to_user":false
+    "report_to_user":false,
+    "evidence":{"type":"life_event|user_statement|chat_transition|reply_intention","source_event_id":"仅life_event填写已有事件id","quote":"来源中的逐字引用"}
   }]
 }`;
 }

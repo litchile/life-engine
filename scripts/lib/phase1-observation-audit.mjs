@@ -1,3 +1,4 @@
+import { summarizeAutonomyQuality } from "../../scf-runtime/shared/autonomy-quality.js";
 const HOUR_MS = 60 * 60 * 1000;
 
 function list(value) {
@@ -55,16 +56,25 @@ function canonEvidence(entity) {
 }
 
 export function auditPhase1Observation(snapshot, options = {}) {
-  const hours = Math.max(1, Number(options.hours || 72));
+  const hours = Number(options.hours ?? 72);
+  if (!Number.isFinite(hours) || hours <= 0) throw new Error("hours must be a positive finite number");
+  const asOf = options.asOf === undefined ? Date.now() : time(options.asOf);
+  if (!Number.isFinite(asOf) || asOf <= 0) throw new Error("asOf must be a valid timestamp");
   const events = list(snapshot?.events).filter((event) => event?.id && time(event?.occurred_at))
+    .filter((event) => time(event.occurred_at) <= asOf)
     .sort((a, b) => time(a.occurred_at) - time(b.occurred_at));
   const outboxes = list(snapshot?.outboxes);
   const latestTime = events.length ? time(events.at(-1).occurred_at) : 0;
   const earliestTime = events.length ? time(events[0].occurred_at) : 0;
-  const windowStart = latestTime - hours * HOUR_MS;
+  const windowStart = asOf - hours * HOUR_MS;
   const windowEvents = events.filter((event) => time(event.occurred_at) >= windowStart);
-  const windowOutboxes = outboxes.filter((item) => !item?.created_at || time(item.created_at) >= windowStart);
+  const windowOutboxes = outboxes.filter((item) => !item?.created_at || (time(item.created_at) >= windowStart && time(item.created_at) <= asOf));
   const checks = [];
+  const trailingGap = latestTime ? (asOf - latestTime) / HOUR_MS : null;
+  checks.push(check("recent_event_freshness", trailingGap === null ? "insufficient" : trailingGap > 18 ? "fail" : "pass", {
+    evaluated_at: new Date(asOf).toISOString(), latest_event_at: events.at(-1)?.occurred_at || null,
+    hours_since_last_event: trailingGap === null ? null : Number(trailingGap.toFixed(2)), maximum_hours: 18,
+  }));
 
   const coverageHours = latestTime && earliestTime ? (latestTime - earliestTime) / HOUR_MS : 0;
   checks.push(check("observation_coverage", coverageHours >= hours ? "pass" : "insufficient", {
@@ -77,7 +87,12 @@ export function auditPhase1Observation(snapshot, options = {}) {
   const gaps = windowEvents.slice(1).map((event, index) => (
     time(event.occurred_at) - time(windowEvents[index].occurred_at)
   ) / HOUR_MS);
-  const maximumGap = gaps.length ? Math.max(...gaps) : (windowEvents.length ? 0 : hours);
+  // Include the silent tail after the last event. Previously a stopped service
+  // could pass indefinitely because its own last event defined the window end.
+  const maximumGap = windowEvents.length
+    ? Math.max(...gaps, (asOf - time(windowEvents.at(-1).occurred_at)) / HOUR_MS,
+      (time(windowEvents[0].occurred_at) - Math.max(windowStart, earliestTime)) / HOUR_MS)
+    : hours;
   const days = [...new Set(windowEvents.map((event) => localDate(event.local_date)).filter(Boolean))];
   checks.push(check("continuous_world_life", windowEvents.length > 0 && maximumGap <= 18 ? "pass" : "fail", {
     committed_events: windowEvents.length,
@@ -107,7 +122,7 @@ export function auditPhase1Observation(snapshot, options = {}) {
     const date = localDate(outbox.local_date) || "unknown";
     deliveredByDate[date] = (deliveredByDate[date] || 0) + 1;
   }
-  const complete = completeDates(windowEvents, latestTime, windowStart);
+  const complete = completeDates(windowEvents, asOf, windowStart);
   const outsideTarget = complete.filter((date) => (deliveredByDate[date] || 0) < 2 || (deliveredByDate[date] || 0) > 4);
   checks.push(check("proactive_message_cadence", outsideTarget.length ? "fail" : (complete.length ? "pass" : "insufficient"), {
     target_per_complete_day: "2-4",
@@ -152,9 +167,12 @@ export function auditPhase1Observation(snapshot, options = {}) {
   const insufficient = checks.filter((item) => item.status === "insufficient");
   const overall = hardFailures.length ? "fail" : (insufficient.length ? "insufficient" : "pass");
   return {
-    schema_version: 1,
+    schema_version: 2,
+    evaluated_at: new Date(asOf).toISOString(),
+    window_start: new Date(windowStart).toISOString(),
     overall,
     observation_hours: hours,
+    content_quality: summarizeAutonomyQuality(windowEvents),
     summary: {
       checks_passed: checks.filter((item) => item.status === "pass").length,
       checks_failed: hardFailures.length,

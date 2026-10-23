@@ -78,6 +78,7 @@ describe("runtime pack loading", () => {
 
   it("refuses wrong binding and verifies reference bytes at the read boundary", async () => {
     const p = pack();
+    p.version = "1.0.0"; // This fixture intentionally exercises the original immutable asset namespace.
     const image = Buffer.from("fixture image");
     p.assets = [{ id: "identity", role: "identity", key: "media/packs/agent/1.0.0/identity.png", mime_type: "image/png", sha256: createHash("sha256").update(image).digest("hex") }];
     let corrupt = false;

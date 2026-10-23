@@ -62,6 +62,7 @@ function normalizeThread(raw, nowIso) {
     id: text(raw?.id || raw?.thread_id, 100) || threadId(title),
     title,
     content: text(raw?.content || title, 420),
+    original_goal: text(raw?.original_goal || title, 180),
     stage,
     status: TERMINAL_STAGES.has(stage) ? "closed" : "active",
     priority: Math.max(1, Math.min(5, Number(raw?.priority || (reportToUser ? 4 : 2)))),
@@ -69,6 +70,7 @@ function normalizeThread(raw, nowIso) {
     related_entities: [...new Set(list(raw?.related_entities).map((item) => text(item, 80)).filter(Boolean))].slice(0, 8),
     source,
     stance: ["accepted", "deferred", "declined"].includes(raw?.stance) ? raw.stance : null,
+    stance_evidence: raw?.stance_evidence || null,
     suggested_by: text(raw?.suggested_by, 80) || null,
     report_to_user: reportToUser || source === "user_suggestion",
     promised_at: text(raw?.promised_at, 40) || (reportToUser ? (raw?.created_at || nowIso) : null),
@@ -119,6 +121,9 @@ export function activeOpenThreads(value) {
 }
 
 function findMatchingThread(items, update) {
+  if (update?.source === "user_suggestion" && update?.suggested_by) {
+    items = items.filter((thread) => thread.source === "user_suggestion" && thread.suggested_by === update.suggested_by);
+  }
   const requestedId = text(update?.thread_id || update?.id, 100);
   if (requestedId) return items.find((thread) => thread.id === requestedId) || null;
   const query = text(update?.title || update?.content || update?.intention, 320);
@@ -146,6 +151,8 @@ function applyUpdate(items, rawUpdate, event, nowIso) {
   let current = findMatchingThread(items, rawUpdate);
   if (current?.status === "closed") return items;
   const operation = text(rawUpdate?.operation || rawUpdate?.stage, 24).toLowerCase();
+  const acceptance = current?.source === "user_suggestion" ? suggestionAcceptance(event, current) : null;
+  if (acceptance) current = { ...current, stance: "accepted", stance_evidence: acceptance };
   const suggestionCompletion = current?.source === "user_suggestion"
     && operationStage(operation, current.stage) === "resolved";
   const suggestionEvidence = suggestionCompletion ? completedSuggestionEvidence(event, current) : null;
@@ -182,7 +189,7 @@ function applyUpdate(items, rawUpdate, event, nowIso) {
   if (!current && !title) return items;
   if (!current) {
     current = normalizeThread({
-      id: rawUpdate?.thread_id,
+      id: rawUpdate?.thread_id || (rawUpdate?.source === "user_suggestion" ? threadId(`${rawUpdate.suggested_by || "user"}:${title}`) : undefined),
       title,
       content: rawUpdate?.content || title,
       priority: rawUpdate?.priority,
@@ -215,13 +222,18 @@ function applyUpdate(items, rawUpdate, event, nowIso) {
     note: text(rawUpdate?.evidence || event?.activity || event?.narrative, 220),
     ...(receipt ? { result: receipt } : {}),
   }].slice(-MAX_EVIDENCE) : current.evidence;
-  const nextSource = rawUpdate?.source ? normalizeSource(rawUpdate.source) : current.source;
+  const nextSource = current.source === "user_suggestion" ? current.source
+    : (rawUpdate?.source ? normalizeSource(rawUpdate.source) : current.source);
   const nextReport = rawUpdate?.report_to_user === true
     || current.report_to_user === true
     || nextSource === "chat_promise";
   items[index] = {
     ...current,
-    title: title || current.title,
+    title: current.source === "user_suggestion" ? current.title : (title || current.title),
+    original_goal: current.original_goal,
+    stance: event?.source_type === "chat_suggestion" && ["accepted", "deferred", "declined"].includes(rawUpdate?.stance)
+      ? rawUpdate.stance : current.stance,
+    stance_evidence: current.stance_evidence,
     content: text(rawUpdate?.content || current.content, 420),
     stage,
     status: TERMINAL_STAGES.has(stage) ? "closed" : "active",
@@ -320,7 +332,7 @@ export function upsertUserSuggestionThreads(value, suggestions = [], {
   location = "",
   nowIso = new Date().toISOString(),
 } = {}) {
-  const event = eventId ? { id: eventId, location, occurred_at: nowIso } : { location, occurred_at: nowIso };
+  const event = { id: eventId, location, occurred_at: nowIso, source_type: "chat_suggestion" };
   const updates = list(suggestions).map((suggestion) => ({
     operation: "observe",
     title: suggestion.title || suggestion.content,
@@ -411,18 +423,18 @@ export function acceptedSharedExperienceThreads(value) {
  */
 function suggestionTokens(value) {
   const tokens = text(value, 240)
-    .replace(/你可以|要不你|建议你|下次|要不要|去试试|去看看|看看|可以/g, " ")
+    .replace(/你可以|要不你|建议你|下次|要不要|去试试|去看看|看看|可以|去|吃|喝|翻|读|看/g, " ")
     .split(/[\s，、。的了呀啊呢吧]+/)
-    .map((part) => part.trim())
-    .filter((part) => part.length >= 2);
+    .map((part) => part.trim().replace(/^(?:一|两|几)?(?:碗|杯|份|本)/, "").replace(/^小面$/, "面"))
+    .filter((part) => part.length >= 2 || /^(?:面|饭|粥|茶)$/.test(part));
   return [...new Set(tokens)];
 }
 
 function eventMatchesSuggestion(event, thread) {
   const hay = `${event.activity || ""} ${event.narrative || ""}`;
-  const tokens = suggestionTokens(`${thread.title} ${thread.content}`);
+  const tokens = suggestionTokens(thread.original_goal || thread.title);
   if (!tokens.length) return false;
-  const hits = tokens.filter((token) => hay.includes(token));
+  const hits = tokens.filter((token) => token === "面" ? /小面|汤面|面条|碗面|吃面|面馆|吃完了?面/.test(hay) : hay.includes(token));
   return hits.length >= Math.min(2, tokens.length);
 }
 
@@ -431,15 +443,49 @@ function completedSuggestionEvidence(event, thread) {
   // A conservative consistency check, not proof of external-world execution.
   // Keep uncertain outcomes open; only a lived, related sentence can close one.
   const sentences = String(event?.narrative || "").split(/[。！？!?\n]/).map((s) => s.trim());
+  const goal = thread.original_goal || thread.title;
+  const meal = /吃|用餐/.test(goal);
+  const action = completionAction(goal);
+  const actor = text(event.character_name, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const ownMeal = new RegExp(`(?:我|自己${actor ? `|${actor}` : ""})[^。！？]{0,18}吃(?:了|完|掉)|^(?:慢慢|终于)?吃(?:了|完|掉)`);
   return sentences.find((sentence) => (
-    eventMatchesSuggestion({ narrative: sentence }, thread)
+    (eventMatchesSuggestion({ narrative: sentence }, thread)
+      || (meal && event.selected_thread_id === thread.id && /吃(?:了|完|掉)(?:了)?(?:[，,]|$)|吃完(?:这|那)(?:一)?碗(?:[，,]|$)/.test(sentence)))
     && !/没有|没能|没去|未能|尚未|还没|未完成|打算|准备|想起|想要|计划|明天|下次|如果|要是|可能|也许|试图|尝试|门关|关门|失败|没找到/.test(sentence)
-    && /看了|翻了|读了|去了|到达|完成|写好|写完|交给|送到|做成|修好|确认|找到了|记下|画好|归还|聊了|问了|买了|看完|读完|finished|completed|delivered/i.test(sentence)
+    && !/看(?:着|见|到)|听(?:见|到|说)|老板|客人|别人|他|她/.test(sentence)
+    && !/(?:只|才)吃|一口|两口|几口|一半|没吃完|剩下一半/.test(sentence)
+    && action.test(sentence) && (!meal || ownMeal.test(sentence))
   )) || null;
 }
 
+function completionAction(goal) {
+  if (/吃|用餐/.test(goal)) return /吃(?:了|完|掉)|用完餐/;
+  if (/喝/.test(goal)) return /喝(?:了|完|掉)/;
+  if (/看|翻|读/.test(goal)) return /看(?:了|完)|翻(?:了|完)|读(?:了|完)/;
+  if (/寄/.test(goal)) return /寄(?:了|出|完)|投进邮筒/;
+  if (/归还|还给/.test(goal)) return /归还|还给了/;
+  if (/修/.test(goal)) return /修好|修完/;
+  if (/画/.test(goal)) return /画好|画完/;
+  if (/买/.test(goal)) return /买了|买到/;
+  if (/问|聊/.test(goal)) return /问了|聊了|得到.*答复/;
+  return /去了|到达|完成|写好|写完|交给|送到|做成|修好|确认|找到了|记下|画好|归还|聊了|问了|买了|看完|读完|finished|completed|delivered/i;
+}
+
+function suggestionAcceptance(event, thread) {
+  if (thread.stance !== "deferred" || event?.selected_thread_id !== thread.id) return null;
+  const update = list(event.thread_updates).find((item) => item.thread_id === thread.id && item.stance_change?.stance === "accepted");
+  const quote = text(update?.stance_change?.evidence, 240);
+  const sentence = text(event.narrative, 10000).split(/[。！？!?]/).find((part) => part.includes(quote));
+  if (!quote || !text(event.narrative, 10000).includes(quote) || !eventMatchesSuggestion({ narrative: quote }, thread)
+    || !/我(?:现在|今天|这次)?(?:决定|愿意|接受|想试试)/.test(quote)
+    || /不|没|明天|下次|如果|[“”「"]/.test(sentence)) return null;
+  return { from: "deferred", to: "accepted", event_id: event.id || null, evidence: quote };
+}
+
 export function bindSharedExperience(event, openThreads) {
-  const accepted = acceptedSharedExperienceThreads(openThreads);
+  const accepted = activeOpenThreads(openThreads).filter((thread) => thread.source === "user_suggestion")
+    .map((thread) => suggestionAcceptance(event, thread) ? { ...thread, stance: "accepted" } : thread)
+    .filter((thread) => thread.stance === "accepted");
   if (!event || !accepted.length) return { event, thread: null };
   let thread = event.selected_thread_id
     ? accepted.find((item) => item.id === event.selected_thread_id) || null
@@ -469,6 +515,7 @@ export function prioritizeOpenThreads(value, context = {}, limit = 6) {
   const currentIntention = text(context.currentIntention, 240);
   const location = text(context.location, 120);
   return activeOpenThreads(value)
+    .filter((thread) => !(thread.source === "user_suggestion" && thread.stance === "declined"))
     .filter((thread) => thread.stage !== "waiting" || !thread.next_check_at || Date.parse(thread.next_check_at) <= nowMs)
     .map((thread) => {
       const ageDays = Math.max(0, (nowMs - (Date.parse(thread.updated_at) || nowMs)) / 86_400_000);
@@ -496,6 +543,7 @@ export function openThreadsForPrompt(value, context = {}) {
   return prioritizeOpenThreads(value, context).map((thread) => ({
     id: thread.id,
     title: thread.title,
+    original_goal: thread.original_goal,
     stage: thread.stage,
     priority: thread.priority,
     location: thread.location,

@@ -24,21 +24,30 @@ function similarity(left, right) {
 }
 
 export function autonomyActionFamily(event) {
-  const activity = String(event?.activity || "");
-  const narrative = String(event?.narrative || "");
+  const actorText = (value) => String(value || "").split(/[，。；！？,;!?\n]+/).map((clause) => {
+    // Observing another actor is not performing their action. Keep the
+    // observation, discard the subordinate actor's verbs for classification.
+    if (/看|听|观察/.test(clause) && /有人|人影|个人|动物|它|他|她|碗碟/.test(clause)) return "观察";
+    if (/碗碟|筷子|轮子|车轮/.test(clause) && !/我/.test(clause)) return "";
+    if (/^(?:里面|窗边|附近)?(?:有个人|有人|它|他|她)/.test(clause.trim())) return "";
+    if (/没|没有|不敢|下次|明天|打算|准备|如果/.test(clause)) return "";
+    return clause;
+  }).join("，");
+  const activity = actorText(event?.activity);
+  const narrative = actorText(event?.narrative);
   const purposePatterns = [
     // Strong action verbs take precedence over incidental objects and venue
     // names. For example, "离开面包店去花店" is travel, not a meal, and an
     // exploration narrative that says "记下" is not automatically writing.
     ["shop_errand", /买|取信|寄信|办事|采购|取货|送信/],
-    ["social", /交谈|聊天|问候|认识|拜访|帮忙|邀请|一起|镇民|老板|朋友/],
-    ["organize", /整理|收拾|清扫|擦拭|归置|摆放|挪动|调整位置|腾出|留出/],
+    ["social", /交谈|聊天|问候|拜访|帮忙|邀请|(?:向|和|跟|与).{0,12}(?:询问|打招呼|说话)|结识/],
+    ["organize", /整理|收拾|清扫|擦拭|归置|摆放|挪动|调整位置|腾出|留出|按平/],
     ["learn", /学习|练习|学会|尝试制作|研究|辨认|核对|比较/],
-    ["meal", /早餐|午餐|晚餐|吃|喝茶|做饭/],
+    ["meal", /吃|喝茶|喝水|做饭|煮面|用餐|进餐/],
     ["write", /写日记|写信|画|记录|抄写/],
     ["read", /读完|读书|看书|翻书|阅读/],
     ["organize", /皮箱/],
-    ["observe", /看窗|看雨|发呆|观察|听雨|望着|闻到/],
+    ["observe", /看窗|看雨|发呆|观察|听雨|听到|听见|听.*声|看清|看了|望着|闻到/],
     ["rest", /休息|睡觉|打盹|躺|静坐/],
     ["walk", /散步|走走|绕路|闲逛/],
     ["travel", /出门|离开|前往|到达|搭车|乘车|赶路|过桥/],
@@ -50,7 +59,6 @@ export function autonomyActionFamily(event) {
   if (narrativePurpose) return narrativePurpose;
   const combined = `${activity} ${narrative}`;
   if (/面包店|花店|书店|集市|邮局/.test(combined)) return "shop_errand";
-  if (/面包|点心|茶|咖啡/.test(combined)) return "meal";
   return "other";
 }
 
@@ -99,6 +107,40 @@ function violatesLocationContinuity() {
   return false;
 }
 
+// Reuse committed event prose as evidence; these are conservative observations,
+// not diagnoses or invented reasons for a character's behaviour.
+export function hesitationEvidence(event) {
+  const narrative = [event?.activity, event?.narrative].map((value) => text(value, 1600)).join("。");
+  const clauses = narrative.split(/[。！？!?；;\n]+/).filter(Boolean);
+  const stalled = clauses.find((line) => !/上次|昨天|以前/.test(line)
+    && /没敢|不敢|没(?:有)?(?:进去|进门|推门|开口)|脚.*没动|攒.*劲|鼓.*勇气|还没准备好/.test(line));
+  if (!stalled) return null;
+  const completed = clauses.filter((line) => !/下次|明天|准备|打算|如果|没|不敢|想要/.test(line));
+  const steps = completed.filter((line) => /看了菜单|读了菜单|问了|点了|买了|走进|进了店|坐下|煮面|做饭|看清|认出|决定不去|决定放弃/.test(line));
+  const obstacles = clauses.filter((line) => /已经关门|店.*关了|正在打烊|没有空位|客满|钱不够|忘带钱|身体不舒服|暴雨|道路封闭/.test(line));
+  return {
+    event_id: event?.id || null,
+    location: event?.location || "",
+    target: autonomyLocationKey(event?.location).replace(/(?:的)?(?:门口|门外|窗外|门槛|外面)$/, ""),
+    thread_id: event?.selected_thread_id || null,
+    evidence: stalled, steps, obstacles,
+  };
+}
+
+function repeatedHesitation(event, recent) {
+  const current = hesitationEvidence(event);
+  if (!current) return false;
+  const previous = [...recent].reverse().map(hesitationEvidence).find((item) => item && (
+    current.thread_id && current.thread_id === item.thread_id
+    || current.target !== "unknown" && current.target === item.target));
+  if (!previous) return false;
+  // A recorded small action or changed external obstacle can justify revisiting
+  // the same place. Merely renaming the activity or selecting a thread cannot.
+  const newEvidence = [...current.steps, ...current.obstacles].some((line) =>
+    ![...previous.steps, ...previous.obstacles].some((old) => similarity(line, old) >= 0.68));
+  return !newEvidence;
+}
+
 export function autonomySelectionDirective(recentEvents = [], activeThreads = []) {
   const recent = recentEvents.slice(-8);
   const locations = recent.map((event) => autonomyLocationKey(event.location));
@@ -107,10 +149,12 @@ export function autonomySelectionDirective(recentEvents = [], activeThreads = []
   const action = dominant(actions);
   const collapsedLocation = recent.length >= 4 && location.share >= 0.625;
   const collapsedAction = recent.length >= 4 && action.share >= 0.5;
+  const recentHesitations = recent.map(hesitationEvidence).filter(Boolean).slice(-3);
   const instructions = [
     collapsedLocation ? `近期地点过度集中在“${location.key}”；本轮可以因一个念头去不同地点，不必逐步铺路。` : "",
     collapsedAction ? `近期行动类型“${action.key}”过多；本轮换一种行动即可，包括突发小事或只想不做。` : "",
     activeThreads.length ? "可推进一个开放线索，也可以只是犹豫、改变主意或记下念头；不强制本轮必须产生结果。" : "",
+    recentHesitations.length ? "已有犹豫记录：再次接触同一件事时先读上次的实际障碍；可做一个舒服的小步骤、明确改主意，或去过别的日常。没有新行动或新障碍，不重复站在原处退缩；不编造障碍，也不强迫成功。" : "",
   ].filter(Boolean);
   return {
     dominant_location: location,
@@ -119,6 +163,7 @@ export function autonomySelectionDirective(recentEvents = [], activeThreads = []
     action_entropy: Number(normalizedEntropy(actions).toFixed(3)),
     collapsed_location: collapsedLocation,
     collapsed_action: collapsedAction,
+    recent_hesitations: recentHesitations,
     instruction: instructions.join(" ") || "保持生活有变化，但允许不可预测的念头；不要用换一种说法重复近期生活。",
   };
 }
@@ -182,6 +227,7 @@ export function evaluateAutonomyCandidate(event, recentEvents = [], activeThread
     && !breaksLocationRunLimit
     && (sameActionCount >= 3 || similarNarrativeCount >= 2);
   const reasons = [
+    repeatedHesitation(event, recent) ? "repeated_hesitation_without_change" : "",
     cooldownViolation ? "cooldown_same_location_action" : "",
     locationRunViolation ? "location_run_limit" : "",
     actionRunViolation ? "action_run_limit" : "",

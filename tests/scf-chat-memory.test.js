@@ -12,6 +12,17 @@ import {
 } from "../scf-runtime/shared/chat-memory.js";
 
 describe("layered conversation memory and authoritative scene", () => {
+  it.each([
+    ["旧磨坊后面的围栏", "indoors", "outdoors"],
+    ["房屋外面的篱笆", "indoors", "outdoors"],
+    ["街角面馆", "outdoors", "indoors"],
+    ["青石路旁的书店", "outdoors", "indoors"],
+    ["街角面馆门口", "indoors", "threshold"],
+    ["面馆外的青石路", "indoors", "outdoors"],
+    ["未知地点", "outdoors", "outdoors"],
+  ])("infers the actual place rather than a name prefix or prior scene: %s", (place, previous, expected) => {
+    expect(inferEnvironment(place, previous)).toBe(expected);
+  });
   const world = { weather: "秋日晴朗" };
   const agent = { location: "云杉客栈二楼房间", activity: "画画", current_intention: "晚些时候去院子" };
 

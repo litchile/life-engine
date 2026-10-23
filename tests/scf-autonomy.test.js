@@ -189,6 +189,30 @@ describe("SCF autonomous heartbeat", () => {
     expect(store.values.get("state/autonomy.json").daily_message_count).toBe(1);
   });
 
+  it("records a delivered proactive message for quotes and retries archive failure without resending", async () => {
+    const key = autonomyNotificationOutboxKey("2026-08-09", "dialogue-receipt");
+    const outbox = autonomyNotificationOutbox({ eventId: "dialogue-receipt", localDate: "2026-08-09",
+      recipient: "ou_owner", message: "我在面馆窗外看了一会儿。", nowIso: "2026-08-09T02:00:00.000Z" });
+    const store = outboxMemoryStore({ "contacts/ou_owner.json": { history: [{ role: "user", content: "旧对话" }] } });
+    const originalPut = store.putJson;
+    let failedOnce = false;
+    store.putJson = async (k, value) => {
+      if (k === "contacts/ou_owner.json" && !failedOnce) { failedOnce = true; throw new Error("archive write failed"); }
+      await originalPut(k, value);
+    };
+    let sends = 0;
+    const sendText = async () => { sends++; return "proactive-message-id"; };
+    const partial = await deliverAutonomyNotification(store, key, outbox, {}, { sendText, now: new Date("2026-08-09T02:01:00Z") });
+    expect(partial).toMatchObject({ text_status: "sent", text_message_id: "proactive-message-id", status: "partial_failure" });
+    const sent = await deliverAutonomyNotification(store, key, partial, {}, { sendText, now: new Date("2026-08-09T02:17:00Z") });
+    expect(sent.status).toBe("sent");
+    expect(sends).toBe(1);
+    const contact = store.values.get("contacts/ou_owner.json");
+    expect(contact.history).toHaveLength(1);
+    expect(contact.message_archive).toEqual([expect.objectContaining({ message_id: "proactive-message-id", event_id: "dialogue-receipt", content: outbox.message })]);
+    expect(store.values.has("contacts/other.json")).toBe(false);
+  });
+
   it("replays only the failed image delivery and reuses the generated COS object", async () => {
     const key = autonomyNotificationOutboxKey("2026-08-09", "event-image");
     const imageObjectKey = "generated/2026-08-09/event-image.png";

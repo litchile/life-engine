@@ -33,7 +33,7 @@ describe("life runtime profile and weather state", () => {
     );
     expect(activityDurationMinutes("organize", "same-seed", profile)).toBeGreaterThanOrEqual(15);
     expect(activityDurationMinutes("organize", "same-seed", profile)).toBeLessThanOrEqual(35);
-    expect(DEFAULT_LIFE_PROFILE.character.persona_anchors).toContain("稍微社恐");
+    expect(DEFAULT_LIFE_PROFILE.character.persona_anchors).toContain("对陌生人慢热，但能独立处理日常生活");
   });
 
   it("uses a scoped weather cache, refreshes stale days and exposes provenance to the World Tick", () => {

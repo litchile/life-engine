@@ -1,3 +1,5 @@
+import { recallableMemory } from "./memory-evidence.js";
+
 const KEYS = {
   canon: "state/memory/canon.json",
   episodes: "state/memory/episodes.json",
@@ -108,7 +110,7 @@ function routeUpdate(update, nowIso) {
     importance: Math.max(1, Math.min(5, Number(update?.importance || 1))),
   };
   if (["intention", "promise"].includes(update.kind)) return { layer: "intentions", item: { ...base, id: update.id || idFor("intention", `${update.subject}|${update.predicate}|${content}`), status: update.operation === "resolve" ? "resolved" : "active" } };
-  if (update.kind === "episode") return { layer: "episodes", item: { ...base, id: update.id || idFor("episode", content), narrative: content, occurred_at: nowIso } };
+  if (update.kind === "episode") return { layer: "episodes", item: { ...base, id: update.id || idFor("episode", `${update.evidence?.source_event_id || ""}|${content}`), narrative: content, occurred_at: update.occurred_at || nowIso } };
   if (update.kind === "preference") return { layer: "reflections", item: { ...base, id: update.id || idFor("reflection", content), reflection_type: "preference" } };
   return { layer: "canon", item: { ...base, id: update.id || idFor("canon", `${update.subject}|${update.predicate}|${content}`), status: "active" } };
 }
@@ -183,9 +185,9 @@ function score(item, query, nowIso) {
   return relevance * 12 + Number(item.importance || 1) * 1.5 + 1 / (1 + ageDays / 14);
 }
 
-export function retrieveLayeredMemory(layers, { query = "", limit = 12, nowIso = new Date().toISOString() } = {}) {
+export function retrieveLayeredMemory(layers, { query = "", limit = 12, nowIso = new Date().toISOString(), audience = null } = {}) {
   const ranked = (items, count) => list(items)
-    .filter((item) => item.status !== "resolved" && item.status !== "superseded")
+    .filter((item) => item.status !== "resolved" && item.status !== "superseded" && recallableMemory(item, audience))
     .map((item) => ({ ...item, retrieval_score: Number(score(item, query, nowIso).toFixed(3)) }))
     .sort((a, b) => b.retrieval_score - a.retrieval_score)
     .slice(0, count);

@@ -37,7 +37,7 @@ function fixture(hours = 84) {
 
 describe("phase 1 production observation audit", () => {
   it("passes a continuous governed 72-hour export", () => {
-    const report = auditPhase1Observation(fixture(), { hours: 72 });
+    const report = auditPhase1Observation(fixture(), { hours: 72, asOf: "2026-08-04T12:00:00Z" });
     expect(report.overall).toBe("pass");
     expect(report.summary.checks_failed).toBe(0);
   });
@@ -47,15 +47,35 @@ describe("phase 1 production observation audit", () => {
     snapshot.frontiers.decisions.push({ id: "decision-1" });
     snapshot.canon.entities[0].last_seen_event_id = "event-6";
     snapshot.outboxes.push({ status: "dead_letter", local_date: "2026-08-03", created_at: "2026-08-03T03:00:00.000Z" });
-    const report = auditPhase1Observation(snapshot, { hours: 72 });
+    const report = auditPhase1Observation(snapshot, { hours: 72, asOf: "2026-08-04T12:00:00Z" });
     expect(report.overall).toBe("fail");
     expect(report.checks.find((item) => item.id === "frontier_decision_idempotency").status).toBe("fail");
     expect(report.checks.find((item) => item.id === "notification_delivery_health").status).toBe("fail");
   });
 
   it("reports insufficient evidence before the observation window is complete", () => {
-    const report = auditPhase1Observation(fixture(24), { hours: 72 });
+    const report = auditPhase1Observation(fixture(24), { hours: 72, asOf: "2026-08-02T00:00:00Z" });
     expect(report.overall).toBe("insufficient");
     expect(report.checks.find((item) => item.id === "observation_coverage").status).toBe("insufficient");
+  });
+
+  it("fails when an otherwise healthy export ends before a silent 24-hour tail", () => {
+    const report = auditPhase1Observation(fixture(), { hours: 72, asOf: "2026-08-05T12:00:00Z" });
+    expect(report.overall).toBe("fail");
+    expect(report.checks.find((item) => item.id === "recent_event_freshness")).toMatchObject({ status: "fail", hours_since_last_event: 24 });
+    expect(report.checks.find((item) => item.id === "continuous_world_life").maximum_gap_hours).toBe(24);
+  });
+
+  it("does not let a future-dated event hide a stale last event", () => {
+    const snapshot = fixture();
+    snapshot.events.push({ ...snapshot.events.at(-1), id: "future", occurred_at: "2026-08-10T00:00:00Z" });
+    const report = auditPhase1Observation(snapshot, { asOf: "2026-08-05T12:00:00Z" });
+    expect(report.checks.find((item) => item.id === "recent_event_freshness").status).toBe("fail");
+    expect(report.checks.find((item) => item.id === "latest_state_linkage").latest_event_id).not.toBe("future");
+  });
+
+  it("rejects invalid replay timestamps and non-finite observation windows", () => {
+    expect(() => auditPhase1Observation(fixture(), { asOf: "not-a-date" })).toThrow();
+    expect(() => auditPhase1Observation(fixture(), { hours: Infinity })).toThrow();
   });
 });

@@ -269,6 +269,7 @@ export function worldCanonForPrompt(canonValue) {
       ? "仅是一次直接观察形成的候选事实；可以谨慎记得这次相遇，但不得补写稳定身份、关系、职业或背景，等待后续独立观察确认。"
       : "已经由多次观察确认，可作为稳定世界事实继续使用。",
     last_seen_at: entity.last_seen_at || "",
+      first_seen_at: entity.first_seen_at || "",
   }));
   return entities;
 }

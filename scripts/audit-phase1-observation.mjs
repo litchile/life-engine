@@ -4,11 +4,15 @@ import process from "node:process";
 import { auditPhase1Observation } from "./lib/phase1-observation-audit.mjs";
 
 function argumentsFor(argv) {
-  const result = { hours: 72, input: "", output: "" };
+  const result = { hours: 72, input: "", output: "", asOf: undefined };
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--input") result.input = argv[++index] || "";
     else if (argv[index] === "--output") result.output = argv[++index] || "";
     else if (argv[index] === "--hours") result.hours = Number(argv[++index] || 72);
+    else if (argv[index] === "--as-of") {
+      result.asOf = argv[++index];
+      if (!result.asOf) throw new Error("--as-of requires a timestamp");
+    }
   }
   return result;
 }
@@ -44,11 +48,11 @@ async function loadExport(root) {
 
 const args = argumentsFor(process.argv.slice(2));
 if (!args.input) {
-  console.error("Usage: npm run audit:phase1-observation -- --input <COS export directory> [--hours 72] [--output report.json]");
+  console.error("Usage: npm run audit:phase1-observation -- --input <COS export directory> [--hours 72] [--as-of ISO timestamp] [--output report.json]");
   process.exitCode = 1;
 } else {
   const snapshot = await loadExport(path.resolve(args.input));
-  const report = auditPhase1Observation(snapshot, { hours: args.hours });
+  const report = auditPhase1Observation(snapshot, { hours: args.hours, asOf: args.asOf });
   const rendered = `${JSON.stringify(report, null, 2)}\n`;
   if (args.output) await writeFile(path.resolve(args.output), rendered, "utf8");
   process.stdout.write(rendered);

@@ -172,7 +172,8 @@ export function buildLifeDirector({ state, worldTick, agent, emotionState, world
   const suggestedOpportunity = list(worldTick.perceivable_opportunities).find((item) => (
     !avoidLocations.some((location) => samePlace(location, item.location))
   )) || list(worldTick.perceivable_opportunities)[0] || null;
-  const freeDue = progressedToday.length >= 1 || list(today?.events).at(-1)?.mode === "goal";
+  const lastActivity = list(today?.events).at(-1);
+  const freeDue = progressedToday.length >= 1 || lastActivity?.mode === "goal" || Boolean(lastActivity?.attempted_goal_id);
   const mode = promise ? "promise" : lowEnergy ? "rest" : selected && !freeDue ? "goal" : "free";
   const dayPlan = today || {
     date, main_goal_id: selected?.goal_id || ranked[0]?.goal.id || null,
@@ -184,7 +185,7 @@ export function buildLifeDirector({ state, worldTick, agent, emotionState, world
     avoidLocations.length ? `近两天路线集中，今天换开${avoidLocations.join("、")}` : "",
     promise ? "先处理已有聊天承诺" : "",
     sharedExperience.length ? "用户建议可选用，不必每天推进" : "",
-    freeDue ? "今日已有推进，留出自由生活" : ""].filter(Boolean);
+    freeDue ? "上一轮已尝试目标或今日已有推进，留出自由生活" : ""].filter(Boolean);
   return {
     schema_version: 2, local_date: date, observed_at: worldTick.observed_at, mode, day_plan: dayPlan,
     selected: mode === "goal" ? selected : null,

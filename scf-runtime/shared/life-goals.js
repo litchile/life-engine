@@ -262,6 +262,8 @@ export function createLifePlanEffect(state, decision, event, outcome) {
     narrative: text(event.narrative, 400), message: text(event.message_to_user, 300),
     status: outcome.status, reason: outcome.reason, evidence: outcome.evidence || null,
     mode: decision.mode,
+    // A rejected goal attempt is not progress, but must still affect scheduling.
+    attempted_goal_id: decision.fallback?.attempted_goal_id || null,
   }];
   return { event_id: event.id, occurred_at: event.occurred_at, goals, day };
 }

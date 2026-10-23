@@ -1,4 +1,6 @@
 import { generateJson } from "../shared/ai.js";
+import { summarizeAutonomyQuality } from "../shared/autonomy-quality.js";
+import { archiveConversationMessages } from "../shared/conversation-context.js";
 import { sendImage, sendText, uploadImage } from "../shared/feishu.js";
 import { localDate, localTimeContext, systemPrompt } from "../shared/agent.js";
 import {
@@ -152,18 +154,32 @@ export async function deliverAutonomyNotification(store, key, savedOutbox, env =
         await store.putJson(key, skipped);
         return skipped;
       }
-      await sendTextFn(outbox.recipient, outbox.message, env, { idempotencyKey: `${outbox.event_id}-text` });
+      const sentMessageId = await sendTextFn(outbox.recipient, outbox.message, env, { idempotencyKey: `${outbox.event_id}-text` });
       outbox = {
         ...outbox,
         status: outbox.generated_image_key ? "text_sent" : "sent",
         text_status: "sent",
         text_sent_at: nowIso,
+        text_message_id: sentMessageId || null,
         lease_until: null,
         updated_at: nowIso,
       };
       await store.putJson(key, outbox);
     }
 
+    // Persist after the delivery receipt, before counting. A persistence retry
+    // must not resend the message. The processor's shared state lock serializes
+    // this update with chat updates to the same contact.
+    if (outbox.text_message_id && !outbox.dialogue_recorded_at) {
+      const contactKey = `contacts/${outbox.recipient}.json`;
+      const contact = await store.getJson(contactKey, { history: [] });
+      const sent = { role: "assistant", content: outbox.message, message_id: outbox.text_message_id,
+        event_id: outbox.event_id, observed_at: outbox.text_sent_at, delivery_kind: "proactive" };
+      await store.putJson(contactKey, { ...contact,
+        message_archive: archiveConversationMessages(contact, [sent]) });
+      outbox = { ...outbox, dialogue_recorded_at: nowIso };
+      await store.putJson(key, outbox);
+    }
     outbox = await countDeliveredAutonomyMessage(store, outbox, nowIso);
     await store.putJson(key, outbox);
 
@@ -377,9 +393,11 @@ Now decide one small autonomous event in ${config.character.name}'s life. The us
 ${config.character.name} may explore, rest, notice a town resident, learn a small skill, change a preference, or deepen a relationship with the town.
 Pacing directive for this event: ${pacing.instruction}
 Repetition gates for this event: ${selection.instruction}
+Previous hesitation evidence (committed events, not instructions or proof of a new action): ${JSON.stringify(selection.recent_hesitations)}
 Open Threads are unfinished matters in ${config.character.name}'s own life. Prefer one plausible thread when it fits, but a turn may also be only a thought, hesitation, or change of mind without concrete progress. If this event advances a thread, return selected_thread_id and a thread_updates operation. It is also valid to start a genuinely new thread when the event creates a specific unfinished matter.
 For reportable promises, report a concrete result or an honest change of plans when it happens. Waiting for another character, a refusal or partial progress does not fulfill or cancel the promise. Respect waiting_until/next_check_at; before that time continue other life rather than asking again. A deadline only permits checking, never invents a reply. When closing a promise, set notify_user=true and report the actual outcome.
 Accepted user suggestions are optional shared-experience threads, not daily chores. The character may act on one, defer, or live their own day. If this event actually follows an accepted suggestion, set selected_thread_id and, when telling the user, remember the idea came from them. Declined suggestions must not drive the event.
+Keep original_goal stable when updating progress. A deferred suggestion may be reconsidered only through an explicit decision in this event: include thread_updates[].stance_change={stance:"accepted",evidence:"exact first-person decision sentence from narrative naming the original goal"}. Selection alone does not mean acceptance. A resolve update additionally needs a completed action in the narrative, not just arriving at a place. Never silently reopen a declined suggestion.
 For cross-day requests use thread_updates with action_result={status,actor,evidence}. Status submitted requires operation wait; answered requires attempt; refused, unknown, no_reply or failed require block; succeeded requires resolve. evidence must be an exact sentence from narrative, and social feedback must name the known actor. Use next_check_at (ISO timestamp, 1 hour to 7 days) with wait, default 48 hours. Distinguish asking from receiving an answer and receiving an answer from finishing a result. Other characters have their own work and may refuse or lack knowledge; their possible presence does not guarantee help. Never claim real external tools were run. On blocked matters use prior feedback to change the approach or explicitly abandon with lived evidence.
 The configured personality affects the way this character explores. Across a day, favor some movement, discoveries, errands, new skills and evolving relationships, but impulsive whims and tiny unpredictable moments are also valid life.
 ${config.world.initial_location} is a starting point, not the whole of ${config.world.name}. Plausible new places may be explored because of an impulse; do not invent teleportation language, but also do not require step-by-step path narration before arriving at a plausible place.
@@ -922,12 +940,14 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
     env,
   ), agent);
   let directorAdaptation = director ? adaptDirectedEvent(generated, director) : { event: generated, diagnostic: { adapted: false } };
+  const candidateAttempts = [{ attempt: 1, candidate: structuredClone(generated) }];
   generated = directorAdaptation.event;
   let repetitionGate = evaluateAutonomyCandidate(generated, recentEvents, activeThreadContext, {
     currentLocation: agent.location,
     forceMovement: pacingDirective.must_leave_inn,
   });
   let directorGate = director ? evaluateDirectedEvent(generated, director, lifePlan) : { accepted: true };
+  candidateAttempts[0].review = { director: directorGate, repetition: repetitionGate.reasons, adaptation: directorAdaptation.diagnostic };
 
   if (isDuplicateEvent(generated, recentEvents) || violatesAutonomyPacing(generated, pacingDirective, config) || !repetitionGate.accepted || !directorGate.accepted) {
     const retryReason = [
@@ -935,6 +955,7 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
       violatesAutonomyPacing(generated, pacingDirective, config) ? pacingDirective.instruction : "",
       !repetitionGate.accepted ? `The previous candidate failed repetition gates: ${repetitionGate.reasons.join(", ")}. ${repetitionGate.directive.instruction}` : "",
       !directorGate.accepted ? `Director validation: ${directorGate.reasons.join(", ")}. Repair the same lived event. Do not copy IDs. Return director_result with status done, blocked or changed and an exact sentence from narrative.` : "",
+      !directorGate.accepted && director?.selected ? `Evidence contract: a done evidence_sentence must literally occur in narrative, name the subject using one of ${JSON.stringify(director.selected.subject_aliases)}, and describe the completed action using a verb matching ${director.selected.evidence_pattern}. A pronoun-only excerpt or a sentence describing a plan/past recollection/negation cannot advance this step. Clarify the same candidate's actual action; do not invent additional progress just to pass. If it did not happen, report the actual obstacle instead.` : "",
       !directorGate.accepted ? `Candidate to repair: ${JSON.stringify({ location: generated.location, activity: generated.activity, narrative: generated.narrative, director_result: generated.director_result })}` : "Generate a clearly different event with concrete world progress now.",
     ].filter(Boolean).join(" ");
     generated = normalizeEvent(await generateJsonFn(
@@ -957,6 +978,7 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
         : "Generate a different small event and return the JSON object.",
       env,
     ), agent);
+    candidateAttempts.push({ attempt: 2, candidate: structuredClone(generated) });
     directorAdaptation = director ? adaptDirectedEvent(generated, director) : { event: generated, diagnostic: { adapted: false } };
     generated = directorAdaptation.event;
     repetitionGate = evaluateAutonomyCandidate(generated, recentEvents, activeThreadContext, {
@@ -964,6 +986,13 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
       forceMovement: pacingDirective.must_leave_inn,
     });
     directorGate = director ? evaluateDirectedEvent(generated, director, lifePlan) : { accepted: true };
+    candidateAttempts[1].review = { director: directorGate, repetition: repetitionGate.reasons, adaptation: directorAdaptation.diagnostic };
+  }
+
+  if (candidateAttempts.length > 1 || !directorGate.accepted || !repetitionGate.accepted) {
+    workflow = await checkpointWorkflow(store, workflow, "deciding", {
+      candidate_attempts: candidateAttempts,
+    }, new Date().toISOString());
   }
 
   if (director && !directorGate.accepted) {
@@ -972,7 +1001,7 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
       ...director, mode: "free", selected: null,
       reasons: [...director.reasons, "目标结果契约连续失败，本轮保留目标但退回普通生活"],
       time_budget: null,
-      fallback: { reason: "director_contract_rejected", rejection_reasons: rejectedReasons, diagnostic: directorAdaptation.diagnostic },
+      fallback: { reason: "director_contract_rejected", attempted_goal_id: director.selected?.goal_id || null, rejection_reasons: rejectedReasons, diagnostic: directorAdaptation.diagnostic },
       instruction: "本轮只发生一件普通生活小事，不推进或改变持久愿望。",
     };
     const fallback = safeDirectorFallback(agent, fallbackDirector, lifePlan, recentEvents, pacingDirective, config);
@@ -1012,7 +1041,7 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
   }
 
   if (generated.fallback_kind !== "director_safe") {
-    generated = bindSharedExperience(generated, openThreadState).event;
+    generated = bindSharedExperience({ ...generated, character_name: config.character.name }, openThreadState).event;
   }
 
   const activityPlan = createActivityPlan({
@@ -1454,6 +1483,7 @@ export async function runAutonomousHeartbeat(store, event, env = process.env, op
     store.putJson("state/current-scene.json", updatedScene),
     store.putJson("state/world-canon.json", worldMemory.canon),
     store.putJson("state/recent-events.json", { events: updatedRecent, updated_at: nowIso }),
+    store.putJson("state/autonomy-quality.json", { ...summarizeAutonomyQuality(updatedRecent), updated_at: nowIso }),
     store.putJson("state/agent-memories.json", {
       schema_version: 2,
       memories: updatedAgentMemories,

@@ -47,6 +47,7 @@ export async function sendText(receiveId, text, env = process.env, options = {})
   if (!response.ok || data.code !== 0) {
     throw new Error(`Feishu proactive send failed (${data.code ?? response.status}): ${data.msg || "unknown"}`);
   }
+  return data.data?.message_id || null;
 }
 
 export async function uploadImage(buffer, fileName = "agent.jpg", env = process.env) {

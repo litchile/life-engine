@@ -14,12 +14,25 @@ Instead of a chatbot that only reacts when you message it, a Life Engine charact
 
 ## Features
 
-- **Persistent memory** — layered short/long-term memory and a world model that only grows from what the character actually observes.
-- **Autonomous activity** — the character lives on a schedule, explores, pursues goals, and keeps promises across days, even with no user input.
-- **Proactive messaging** — it starts conversations, follows up, and shares moments instead of waiting to be prompted.
+- **Persistent memory** — layered memory, source checks for world facts, and a separate ledger for explicitly stated user preferences.
+- **Autonomous activity** — scheduled events, rule-seeded goals, and persisted unfinished matters that can continue without user input.
+- **Proactive messaging** — scheduled sharing and reports for some completed promises, with delivery records.
 - **Image generation** — optional life photos grounded in the current world state, using reference images you own.
 - **Character packs** — persona, world, visual rules and initial entities as versioned JSON. Update the pack without wiping the running save.
 - **Pluggable integration** — Feishu today; the messaging layer is an adapter, so Discord / Telegram / a web front-end can be added later.
+
+## Current implementation limits
+
+This source baseline includes dialogue grounding, structured retries, preference storage and autonomous quality accounting. Local tests use mocked services; passing them does not establish live reliability.
+
+- Goals and milestones are seeded by rules. There is no daily reflection process that generates growth or relationship goals from conversations.
+- Preference extraction currently recognizes a narrow set of explicit first-person expressions. History recall can succeed even when a preference was not added to the durable ledger.
+- Strict goal evidence and location checks can reject otherwise useful events and produce silent rest/drink fallbacks. Free-life interactions do not automatically advance related goals.
+- Curiosity threads concern the character's observed world. User-focused questions and date-based personal follow-ups are not a complete implemented loop; thread capacity and lifecycle still need work.
+- Chat-triggered image generation has an unresolved configuration-shape issue. Successful autonomous images do not establish that the chat-photo path works.
+- Chat delivery and state writes are not one transaction. Retry recovery and cross-day behavior require separate live verification.
+
+Do not use the neutralized public deployment bundle as a drop-in replacement for an existing private character save: export also maps identifiers and storage fields. See the deployment and character-pack documents before migrating.
 
 ## How it works
 
@@ -40,7 +53,7 @@ Life Engine 自带一套默认安全护栏（高危内容拦截、输入滥用�
 
 ## Quickstart (local, no deploy)
 
-Requires Node.js 18+.
+Use Node.js 22.12+ or Node.js 24 for local development and the locked test toolchain. Deployment bundles target Node.js 18; building that target locally is not a live SCF runtime test.
 
 ```powershell
 npm ci
